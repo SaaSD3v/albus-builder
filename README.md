@@ -7,9 +7,9 @@ como artifact do GitHub Actions.
 ## Escolhas fixadas
 
 - Kernel: `SaaSD3v/android_kernel_motorola_msm8996`, commit
-  `efe282d45dd09ce5ebc52a8f738a68a73cd3b4aa`.
+  `516086ce0637a9e820793695a4dd8e3ff43e055b`.
 - Defconfig: `albus_defconfig`.
-- KernelSU desativado com `CONFIG_KSU=n`.
+- Fonte fixada antes da PR do KernelSU, sem seus arquivos ou integracao.
 - Suporte ao ramdisk do recovery habilitado com `CONFIG_RD_LZMA=y`.
 - Compiladores: GCC 4.9 ARM64 e ARM32 do AOSP `android-8.1.0_r52`.
 - Recovery base: `twrp-3.5.0_9-0-albus.img`.
@@ -34,9 +34,10 @@ O artifact `recovery` contem:
 - `build-info.txt`
 - `SHA256SUMS`
 
-O workflow interrompe a compilacao se detectar KernelSU, alteracoes de
-configuracao fora de KernelSU e do suporte LZMA, DT incorreto, ramdisk
-modificado ou imagem maior que `21073920` bytes.
+O workflow interrompe a compilacao se detectar qualquer arquivo, integracao,
+configuracao, objeto ou simbolo KernelSU; tambem rejeita alteracoes de
+configuracao fora do suporte LZMA, DT incorreto, ramdisk modificado ou imagem
+maior que `21073920` bytes.
 
 ## Teste no aparelho
 
@@ -53,5 +54,6 @@ adb shell uname -a
 adb shell 'zcat /proc/config.gz | grep CONFIG_KSU'
 ```
 
-O segundo comando deve mostrar `# CONFIG_KSU is not set`. Tambem devem ser
-testados touch, ADB, armazenamento interno, cartao SD, USB e descriptografia.
+O segundo comando nao deve produzir nenhuma saida, pois essa fonte nao possui
+sequer o simbolo `CONFIG_KSU`. Tambem devem ser testados touch, ADB,
+armazenamento interno, cartao SD, USB e descriptografia.

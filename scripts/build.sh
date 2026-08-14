@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 readonly KERNEL_REPO="https://github.com/SaaSD3v/android_kernel_motorola_msm8996.git"
-readonly KERNEL_COMMIT="efe282d45dd09ce5ebc52a8f738a68a73cd3b4aa"
+readonly KERNEL_COMMIT="516086ce0637a9e820793695a4dd8e3ff43e055b"
 
 readonly TOOLCHAIN_TAG="android-8.1.0_r52"
 readonly AARCH64_TOOLCHAIN_REPO="https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
@@ -157,6 +157,12 @@ check_size "$TWRP_SIZE" "$BASE_IMAGE"
 
 note "Clone the pinned kernel and toolchains"
 clone_commit "$KERNEL_REPO" "$KERNEL_COMMIT" "$KERNEL_DIR"
+[[ ! -e "${KERNEL_DIR}/drivers/kernelsu" ]] \
+  || die "the pinned kernel source unexpectedly contains KernelSU"
+if grep -Fq 'drivers/kernelsu/Kconfig' "${KERNEL_DIR}/drivers/Kconfig" \
+  || grep -Eq 'CONFIG_KSU|kernelsu/' "${KERNEL_DIR}/drivers/Makefile"; then
+  die "the pinned kernel source contains KernelSU integration hooks"
+fi
 clone_tag "$AARCH64_TOOLCHAIN_REPO" "$TOOLCHAIN_TAG" "$AARCH64_TOOLCHAIN_TAG_OBJECT" "$AARCH64_TOOLCHAIN_COMMIT" "$AARCH64_TOOLCHAIN_DIR"
 clone_tag "$ARM_TOOLCHAIN_REPO" "$TOOLCHAIN_TAG" "$ARM_TOOLCHAIN_TAG_OBJECT" "$ARM_TOOLCHAIN_COMMIT" "$ARM_TOOLCHAIN_DIR"
 clone_commit "$DTBTOOL_REPO" "$DTBTOOL_COMMIT" "$DTBTOOL_DIR"
@@ -182,24 +188,22 @@ readonly -a MAKE_ARGS=(
   "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
 )
 
-note "Configure the kernel for recovery and disable KernelSU"
+note "Configure the KernelSU-free kernel for recovery"
 make "${MAKE_ARGS[@]}" albus_defconfig
 readonly KERNEL_CONFIG="${KERNEL_OUT}/.config"
 readonly CONFIG_BEFORE_OVERRIDES="${WORK_DIR}/config-before-overrides"
 cp "$KERNEL_CONFIG" "$CONFIG_BEFORE_OVERRIDES"
 
-"${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --disable KSU
 "${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --enable RD_LZMA
 make "${MAKE_ARGS[@]}" olddefconfig
 
 diff -u \
-  <(grep -vE '^(# )?CONFIG_(KSU([_= ]|$)|RD_LZMA([= ]|$)|DECOMPRESS_LZMA([= ]|$))' "$CONFIG_BEFORE_OVERRIDES") \
-  <(grep -vE '^(# )?CONFIG_(KSU([_= ]|$)|RD_LZMA([= ]|$)|DECOMPRESS_LZMA([= ]|$))' "$KERNEL_CONFIG") \
+  <(grep -vE '^(# )?CONFIG_(RD_LZMA|DECOMPRESS_LZMA)([= ]|$)' "$CONFIG_BEFORE_OVERRIDES") \
+  <(grep -vE '^(# )?CONFIG_(RD_LZMA|DECOMPRESS_LZMA)([= ]|$)' "$KERNEL_CONFIG") \
   || die "an unexpected kernel configuration changed"
 
-require_config '# CONFIG_KSU is not set'
-if grep -Eq '^CONFIG_KSU(_[^=]*)?=[ym]$' "$KERNEL_CONFIG"; then
-  die "KernelSU remains enabled"
+if grep -Eq '^(# )?CONFIG_KSU([_= ]|$)' "$KERNEL_CONFIG"; then
+  die "KernelSU configuration symbols unexpectedly exist"
 fi
 require_config 'CONFIG_RD_LZMA=y'
 require_config 'CONFIG_DECOMPRESS_LZMA=y'
@@ -397,7 +401,7 @@ readonly CONFIG_SHA256
   printf 'kernel_sha256=%s\n' "$KERNEL_SHA256"
   printf 'dt_sha256=%s\n' "$DT_SHA256"
   printf 'config_sha256=%s\n' "$CONFIG_SHA256"
-  printf 'kernelsu=disabled\n'
+  printf 'kernelsu=absent-from-source\n'
   printf 'ramdisk_lzma=enabled\n'
 } > "${ARTIFACT_DIR}/build-info.txt"
 
