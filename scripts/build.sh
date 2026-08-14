@@ -182,24 +182,27 @@ readonly -a MAKE_ARGS=(
   "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
 )
 
-note "Configure the kernel and disable only KernelSU"
+note "Configure the kernel for recovery and disable KernelSU"
 make "${MAKE_ARGS[@]}" albus_defconfig
 readonly KERNEL_CONFIG="${KERNEL_OUT}/.config"
-readonly CONFIG_BEFORE_KSU="${WORK_DIR}/config-before-ksu"
-cp "$KERNEL_CONFIG" "$CONFIG_BEFORE_KSU"
+readonly CONFIG_BEFORE_OVERRIDES="${WORK_DIR}/config-before-overrides"
+cp "$KERNEL_CONFIG" "$CONFIG_BEFORE_OVERRIDES"
 
 "${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --disable KSU
+"${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --enable RD_LZMA
 make "${MAKE_ARGS[@]}" olddefconfig
 
 diff -u \
-  <(grep -vE '^(# )?CONFIG_KSU([_= ]|$)' "$CONFIG_BEFORE_KSU") \
-  <(grep -vE '^(# )?CONFIG_KSU([_= ]|$)' "$KERNEL_CONFIG") \
-  || die "a non-KernelSU configuration changed"
+  <(grep -vE '^(# )?CONFIG_(KSU([_= ]|$)|RD_LZMA([= ]|$)|DECOMPRESS_LZMA([= ]|$))' "$CONFIG_BEFORE_OVERRIDES") \
+  <(grep -vE '^(# )?CONFIG_(KSU([_= ]|$)|RD_LZMA([= ]|$)|DECOMPRESS_LZMA([= ]|$))' "$KERNEL_CONFIG") \
+  || die "an unexpected kernel configuration changed"
 
 require_config '# CONFIG_KSU is not set'
 if grep -Eq '^CONFIG_KSU(_[^=]*)?=[ym]$' "$KERNEL_CONFIG"; then
   die "KernelSU remains enabled"
 fi
+require_config 'CONFIG_RD_LZMA=y'
+require_config 'CONFIG_DECOMPRESS_LZMA=y'
 
 require_config 'CONFIG_LOCALVERSION="-lineage"'
 require_config 'CONFIG_LOCALVERSION_AUTO=y'
@@ -395,6 +398,7 @@ readonly CONFIG_SHA256
   printf 'dt_sha256=%s\n' "$DT_SHA256"
   printf 'config_sha256=%s\n' "$CONFIG_SHA256"
   printf 'kernelsu=disabled\n'
+  printf 'ramdisk_lzma=enabled\n'
 } > "${ARTIFACT_DIR}/build-info.txt"
 
 (

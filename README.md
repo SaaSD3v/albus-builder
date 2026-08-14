@@ -9,7 +9,8 @@ como artifact do GitHub Actions.
 - Kernel: `SaaSD3v/android_kernel_motorola_msm8996`, commit
   `efe282d45dd09ce5ebc52a8f738a68a73cd3b4aa`.
 - Defconfig: `albus_defconfig`.
-- Unica mudanca temporaria de configuracao: `CONFIG_KSU=n`.
+- KernelSU desativado com `CONFIG_KSU=n`.
+- Suporte ao ramdisk do recovery habilitado com `CONFIG_RD_LZMA=y`.
 - Compiladores: GCC 4.9 ARM64 e ARM32 do AOSP `android-8.1.0_r52`.
 - Recovery base: `twrp-3.5.0_9-0-albus.img`.
 - Saida principal: `recovery.img`.
@@ -34,8 +35,8 @@ O artifact `recovery` contem:
 - `SHA256SUMS`
 
 O workflow interrompe a compilacao se detectar KernelSU, alteracoes de
-configuracao fora de `CONFIG_KSU`, DT incorreto, ramdisk modificado ou imagem
-maior que `21073920` bytes.
+configuracao fora de KernelSU e do suporte LZMA, DT incorreto, ramdisk
+modificado ou imagem maior que `21073920` bytes.
 
 ## Teste no aparelho
 
