@@ -1,0 +1,5 @@
+*.apk
+*.img
+artifacts/
+out/
+work/
