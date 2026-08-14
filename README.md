@@ -11,6 +11,7 @@ para compilar um recovery (twrp) com suporte as flags do droidspaces para o moto
 | Saida             | recovery.img                                               |
 | droidspaces       | https://github.com/ravindu644/Droidspaces-OSS              |
 
-|-------------------|------------------------------------------------------------|
-| https://twrp.me/motorola/motorolamotoz2play.html |
-| https://dl.twrp.me/albus/ |
+
+twrp original ( base )
+ https://twrp.me/motorola/motorolamotoz2play.html 
+ https://dl.twrp.me/albus/ 
