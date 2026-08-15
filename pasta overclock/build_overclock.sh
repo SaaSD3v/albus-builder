@@ -232,8 +232,7 @@ python3 "${OC_DIR}/overclock_dt.py" \
   "${WORK_DIR}/dt_orig.img" \
   "${WORK_DIR}/dt_oc.img" \
   --gpu-mhz "$GPU_MHZ" \
-  --cpu-mhz "$CPU_MHZ" \
-  --dtc dtc
+  --cpu-mhz "$CPU_MHZ"
 
 [[ -s "${WORK_DIR}/dt_oc.img" ]] || die "Patched dt.img was not produced"
 

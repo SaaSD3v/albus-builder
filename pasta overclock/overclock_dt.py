@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
 """
-Patch GPU and CPU frequency tables in a Motorola QCDT v3 dt.img.
+Binary-patch GPU and CPU frequency tables in a Motorola QCDT v3 dt.img.
 
-Extracts each DTB, decompiles with dtc, patches frequency tables,
-recompiles, and rebuilds the QCDT image.
+NO dtc needed. Direct binary replacement of known frequency values
+in each DTB blob inside the QCDT image.
 
 Usage:
     python3 overclock_dt.py <input_dt.img> <output_dt.img> [--gpu-mhz 700] [--cpu-mhz 2300]
 """
 
 import argparse
-import io
-import os
 import struct
-import subprocess
 import sys
-import tempfile
 
 QCDT_MAGIC = b"QCDT"
-ENTRY_SIZE_MOTO_V3 = 72  # 40 (v3 base) + 32 (motorola model)
+ENTRY_SIZE_MOTO_V3 = 72
+
+# Stock GPU max freq in Hz (little-endian 4 bytes)
+STOCK_GPU_HZ = 650_000_000
+STOCK_GPU_BYTES = struct.pack("<I", STOCK_GPU_HZ)
+
+# Stock CPU max freq in KHz (little-endian 4 bytes)
+STOCK_CPU_KHZ = 2_208_000
+STOCK_CPU_BYTES = struct.pack("<I", STOCK_CPU_KHZ)
 
 
 def read_u32_le(data, offset):
@@ -30,13 +34,11 @@ def write_u32_le(value):
 
 
 def parse_qcdt(data):
-    """Parse QCDT v3 Motorola image, return (header_info, entries, dtb_data)."""
     if data[:4] != QCDT_MAGIC:
         raise ValueError("Not a QCDT image")
 
     hdr_version = read_u32_le(data, 4)
     num_entries = read_u32_le(data, 8)
-
     mtor_version = (hdr_version >> 8) & 0xFF
     qcdt_version = hdr_version & 0xFF
 
@@ -70,6 +72,7 @@ def parse_qcdt(data):
                 "dtb_offset": dtb_offset,
                 "dtb_size": dtb_size,
                 "model": model,
+                "dtb_data": b"",
             }
         )
 
@@ -77,11 +80,9 @@ def parse_qcdt(data):
             dtb_raw = data[dtb_offset : dtb_offset + dtb_size]
             dtb_magic_pos = dtb_raw.find(b"\xd0\x0d\xfe\xed")
             if dtb_magic_pos >= 0:
-                entries[-1]["dtb_data"] = dtb_raw[dtb_magic_pos:]
+                entries[-1]["dtb_data"] = bytearray(dtb_raw[dtb_magic_pos:])
             else:
-                entries[-1]["dtb_data"] = dtb_raw
-        else:
-            entries[-1]["dtb_data"] = b""
+                entries[-1]["dtb_data"] = bytearray(dtb_raw)
 
         print(
             f"  Entry {i}: chip=0x{chipset:x} plat=0x{platform:x} "
@@ -89,125 +90,52 @@ def parse_qcdt(data):
             f"dtb_size={dtb_size}"
         )
 
-    return {
-        "hdr_version": hdr_version,
-        "num_entries": num_entries,
-        "entries": entries,
-    }
+    return {"hdr_version": hdr_version, "num_entries": num_entries, "entries": entries}
 
 
-def decompile_dtb(dtb_data, dtc_path="dtc"):
-    """Decompile DTB to DTS text using dtc."""
-    with tempfile.NamedTemporaryFile(suffix=".dtb", delete=False) as f:
-        f.write(dtb_data)
-        dtb_path = f.name
-
-    try:
-        result = subprocess.run(
-            [dtc_path, "-I", "dtb", "-O", "dts", "-q", dtb_path],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            print(f"  WARNING: dtc decompile failed: {result.stderr}", file=sys.stderr)
-            return None
-        return result.stdout
-    finally:
-        os.unlink(dtb_path)
+def find_all(dtb, needle):
+    """Find all offsets of needle in dtb."""
+    results = []
+    start = 0
+    while True:
+        pos = dtb.find(needle, start)
+        if pos < 0:
+            break
+        results.append(pos)
+        start = pos + 1
+    return results
 
 
-def recompile_dts(dts_text, dtc_path="dtc"):
-    """Compile DTS text back to DTB using dtc."""
-    with tempfile.NamedTemporaryFile(suffix=".dts", mode="w", delete=False) as f:
-        f.write(dts_text)
-        dts_path = f.name
+def patch_gpu_freq(dtb, target_mhz):
+    """Replace the GPU max freq (650 MHz) with target. Binary search+replace."""
+    target_hz = target_mhz * 1_000_000
+    target_bytes = struct.pack("<I", target_hz)
 
-    dtb_path = dts_path.replace(".dts", ".dtb")
-    try:
-        result = subprocess.run(
-            [dtc_path, "-I", "dts", "-O", "dtb", "-q", "-o", dtb_path, dts_path],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            print(f"  WARNING: dtc compile failed: {result.stderr}", file=sys.stderr)
-            return None
+    occurrences = find_all(dtb, STOCK_GPU_BYTES)
+    patched = 0
+    for pos in occurrences:
+        dtb[pos : pos + 4] = target_bytes
+        patched += 1
 
-        with open(dtb_path, "rb") as f:
-            return f.read()
-    finally:
-        for p in [dts_path, dtb_path]:
-            if os.path.exists(p):
-                os.unlink(p)
+    return patched
 
 
-def patch_gpu_freq_table(dts, target_gpu_mhz):
-    """Patch GPU frequency table to reach target_gpu_mhz as max."""
-    target_hz = target_gpu_mhz * 1000000
-    target_hex = f"<0x{target_hz:08x}>"
+def patch_cpu_freq(dtb, target_mhz):
+    """Replace the CPU max freq (2208 MHz) with target. Binary search+replace."""
+    target_khz = target_mhz * 1_000
+    target_bytes = struct.pack("<I", target_khz)
 
-    lines = dts.split("\n")
-    new_lines = []
-    patched = False
+    occurrences = find_all(dtb, STOCK_CPU_BYTES)
+    patched = 0
+    for pos in occurrences:
+        dtb[pos : pos + 4] = target_bytes
+        patched += 1
 
-    for i, line in enumerate(lines):
-        if "qcom,gpu-pwrlevel@0 {" in line:
-            new_lines.append(line)
-            continue
-
-        if patched is False and "qcom,gpu-freq = <0x" in line:
-            old_val = line.strip()
-            indent = line[: len(line) - len(line.lstrip())]
-            new_lines.append(f"{indent}qcom,gpu-freq = {target_hex};")
-            print(f"  GPU: patched max freq to {target_gpu_mhz} MHz (was in original)")
-            patched = True
-            continue
-
-        new_lines.append(line)
-
-    return "\n".join(new_lines)
-
-
-def patch_cpu_freq_table(dts, target_cpu_mhz):
-    """Patch CPU cpufreq table to add target_cpu_mhz as max entry."""
-    target_khz = target_cpu_mhz * 1000
-    target_hex = f"0x{target_khz:08x}"
-
-    lines = dts.split("\n")
-    new_lines = []
-    patched = False
-
-    for i, line in enumerate(lines):
-        if "qcom,cpufreq-table" in line and not patched:
-            indent = line[: len(line) - len(line.lstrip())]
-            stripped = line.strip()
-
-            old_start = stripped.index("<")
-            old_end = stripped.index(">") + 1
-            old_entries = stripped[old_start + 1 : old_end - 1].strip()
-
-            if old_entries.endswith(";"):
-                old_entries = old_entries[:-1].strip()
-
-            entries = [e.strip() for e in old_entries.split() if e.strip()]
-
-            entries.append(target_hex)
-
-            new_table = f"{indent}qcom,cpufreq-table = <{' '.join(entries)}>;"
-            new_lines.append(new_table)
-            print(
-                f"  CPU: added {target_cpu_mhz} MHz OPP to cpufreq table"
-            )
-            patched = True
-            continue
-
-        new_lines.append(line)
-
-    return "\n".join(new_lines)
+    return patched
 
 
 def build_qcdt(image_info, page_size=2048):
-    """Rebuild QCDT v3 Motorola image from modified entries."""
+    """Rebuild QCDT v3 Motorola image."""
     entries = image_info["entries"]
 
     header_size = 12
@@ -257,12 +185,11 @@ def build_qcdt(image_info, page_size=2048):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Patch GPU/CPU freq in QCDT dt.img")
+    parser = argparse.ArgumentParser(description="Binary-patch GPU/CPU freq in QCDT dt.img")
     parser.add_argument("input", help="Input dt.img path")
     parser.add_argument("output", help="Output dt.img path")
     parser.add_argument("--gpu-mhz", type=int, default=700, help="Target GPU MHz (default: 700)")
     parser.add_argument("--cpu-mhz", type=int, default=2300, help="Target CPU MHz (default: 2300)")
-    parser.add_argument("--dtc", default="dtc", help="Path to dtc binary")
     args = parser.parse_args()
 
     with open(args.input, "rb") as f:
@@ -272,7 +199,6 @@ def main():
     image_info = parse_qcdt(data)
 
     print(f"\nPatching to GPU={args.gpu_mhz} MHz, CPU={args.cpu_mhz} MHz")
-    dtc_path = args.dtc
 
     for i, entry in enumerate(image_info["entries"]):
         if not entry["dtb_data"]:
@@ -280,22 +206,16 @@ def main():
             continue
 
         print(f"\n  Processing entry {i} ({entry['model']!r})...")
+        dtb = entry["dtb_data"]
 
-        dts = decompile_dtb(entry["dtb_data"], dtc_path)
-        if dts is None:
-            print(f"  Entry {i}: decompile failed, skipping")
-            continue
+        gpu_count = patch_gpu_freq(dtb, args.gpu_mhz)
+        print(f"  GPU: patched {gpu_count} occurrence(s) of {STOCK_GPU_HZ} Hz -> {args.gpu_mhz * 1_000_000} Hz")
 
-        dts = patch_gpu_freq_table(dts, args.gpu_mhz)
-        dts = patch_cpu_freq_table(dts, args.cpu_mhz)
+        cpu_count = patch_cpu_freq(dtb, args.cpu_mhz)
+        print(f"  CPU: patched {cpu_count} occurrence(s) of {STOCK_CPU_KHZ} KHz -> {args.cpu_mhz * 1_000} KHz")
 
-        new_dtb = recompile_dts(dts, dtc_path)
-        if new_dtb is None:
-            print(f"  Entry {i}: recompile failed, skipping")
-            continue
-
-        entry["dtb_data"] = new_dtb
-        print(f"  Entry {i}: patched OK ({len(new_dtb)} bytes)")
+        if gpu_count == 0 and cpu_count == 0:
+            print(f"  WARNING: no matches found for stock frequencies in entry {i}!")
 
     print("\nRebuilding QCDT image...")
     output = build_qcdt(image_info)

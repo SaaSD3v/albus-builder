@@ -36,7 +36,6 @@ jobs:
             bison \
             build-essential \
             curl \
-            device-tree-compiler \
             flex \
             git \
             libelf-dev \
