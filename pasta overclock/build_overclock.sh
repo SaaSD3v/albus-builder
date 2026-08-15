@@ -129,25 +129,70 @@ clone_tag "$ARM_TOOLCHAIN_REPO" "$TOOLCHAIN_TAG" "$ARM_TOOLCHAIN_TAG_OBJECT" "$A
 clone_commit "$DTBTOOL_REPO" "$DTBTOOL_COMMIT" "${WORK_DIR}/dtbtool"
 
 # ============================================================
-# 2. PATCH the DTS files BEFORE compilation
+# 2. PATCH kernel source for overclock (4 files)
 # ============================================================
-note "Patch DTS: GPU ${STOCK_GPU_HZ} Hz -> ${TARGET_GPU_HZ} Hz, CPU ${STOCK_CPU_KHZ} KHz -> ${TARGET_CPU_KHZ} KHz"
+note "Patch kernel for GPU ${GPU_MHZ} MHz, CPU ${CPU_MHZ} MHz"
 
-GPU_DTS="${WORK_DIR}/kernel/arch/arm/boot/dts/qcom/msm8953-gpu.dtsi"
+# --- File 1: drivers/clk/msm/clock-cpu-8953.c ---
+# The PLL (apcs_hf_pll) already supports up to 2400MHz.
+# Just raise the max_rate limit.
+CPU_CLK_DRV="${WORK_DIR}/kernel/drivers/clk/msm/clock-cpu-8953.c"
+[[ -f "$CPU_CLK_DRV" ]] || die "CPU clock driver not found: $CPU_CLK_DRV"
+grep -q "max_rate = 2208000000UL" "$CPU_CLK_DRV" \
+  || die "Stock max_rate 2208000000 not found in $CPU_CLK_DRV"
+sed -i "s/max_rate = 2208000000UL/max_rate = 2400000000UL/" "$CPU_CLK_DRV"
+note "CPU clock max_rate raised to 2400MHz"
+
+# --- File 2: drivers/clk/msm/clock-gcc-8953.c ---
+# Add 700MHz entry to GPU clock source table.
+# gpll3 = 1300MHz. 700MHz cannot be derived from gpll3 (1300/700 is not integer).
+# Use gpll0 = 1200MHz. 700MHz not derivable.
+# Use gpll4_out_aux = 1152MHz. 700MHz not derivable.
+# Actually, best approach: use the XO path or just set gpll3 to 1400MHz.
+# gpll3 is programmable. Change 650MHz entry: gpll3 1300->1400, then 1400/2 = 700.
+GPU_CLK_DRV="${WORK_DIR}/kernel/drivers/clk/msm/clock-gcc-8953.c"
+[[ -f "$GPU_CLK_DRV" ]] || die "GPU clock driver not found: $GPU_CLK_DRV"
+grep -q "650000000" "$GPU_CLK_DRV" \
+  || die "Stock GPU 650MHz not found in $GPU_CLK_DRV"
+# Change gpll3 from 1300MHz to 1400MHz and divider from 1 to 2 to get 700MHz
+# Original: F_MM( 650000000,    1300000000,               gpll3,    1,    0,     0),
+sed -i 's/F_MM( 650000000,    1300000000,               gpll3,    1,/F_MM( 700000000,    1400000000,               gpll3,    1,/' "$GPU_CLK_DRV"
+grep -q "700000000" "$GPU_CLK_DRV" \
+  || die "GPU clock patch failed - 700MHz not found in $GPU_CLK_DRV"
+note "GPU clock: 650MHz -> 700MHz (gpll3 1400MHz/1)"
+
+# --- File 3: arch/arm/boot/dts/qcom/msm8953.dtsi ---
+# Patch speed-bin tables, cpufreq-table, and gfxfreq-corner
 CPU_DTS="${WORK_DIR}/kernel/arch/arm/boot/dts/qcom/msm8953.dtsi"
-
-[[ -f "$GPU_DTS" ]] || die "GPU DTS not found: $GPU_DTS"
 [[ -f "$CPU_DTS" ]] || die "CPU DTS not found: $CPU_DTS"
 
-# Patch GPU: replace 650000000 with TARGET_GPU_HZ
-grep -q "$STOCK_GPU_HZ" "$GPU_DTS" || die "Stock GPU freq $STOCK_GPU_HZ not found in $GPU_DTS"
-sed -i "s/${STOCK_GPU_HZ}/${TARGET_GPU_HZ}/g" "$GPU_DTS"
-note "GPU patched: $(grep -c "$TARGET_GPU_HZ" "$GPU_DTS") occurrence(s) of $TARGET_GPU_HZ"
+# 3a: Patch cpufreq-table (KHz values, add 2300000 at end)
+grep -q "< ${STOCK_CPU_KHZ} >" "$CPU_DTS" \
+  || die "Stock CPU freq ${STOCK_CPU_KHZ} not found in cpufreq-table"
+sed -i "s/< ${STOCK_CPU_KHZ} >/< ${STOCK_CPU_KHZ} >,\n         < ${TARGET_CPU_KHZ} >/" "$CPU_DTS"
+note "CPU cpufreq-table: added ${TARGET_CPU_KHZ} KHz"
 
-# Patch CPU: replace last cpufreq-table entry 2208000 with TARGET_CPU_KHZ
-grep -q "$STOCK_CPU_KHZ" "$CPU_DTS" || die "Stock CPU freq $STOCK_CPU_KHZ not found in $CPU_DTS"
-sed -i "s/< ${STOCK_CPU_KHZ} >/< ${TARGET_CPU_KHZ} >/g" "$CPU_DTS"
-note "CPU patched: $(grep -c "$TARGET_CPU_KHZ" "$CPU_DTS") occurrence(s) of $TARGET_CPU_KHZ"
+# 3b: Patch speed-bin tables (Hz values, add 2300000000 entry)
+# All speedX-bin-vX-cl entries end with 2208000000. Add 2300000000 after each.
+grep -q "2208000000" "$CPU_DTS" \
+  || die "Stock CPU 2208000000 Hz not found in speed-bin tables"
+sed -i '/2208000000/s/2208000000 9/2208000000 9>,\n        < 2300000000 10/' "$CPU_DTS"
+note "CPU speed-bin tables: added 2300000000 Hz"
+
+# 3c: Patch gfxfreq-corner (add 700000000)
+grep -q "650000000" "$CPU_DTS" \
+  || die "Stock GPU 650000000 Hz not found in gfxfreq-corner"
+sed -i 's/< 650000000   7 >/< 700000000   7 >/' "$CPU_DTS"
+note "CPU gfxfreq-corner: 650MHz -> 700MHz"
+
+# --- File 4: arch/arm/boot/dts/qcom/msm8953-gpu.dtsi ---
+# Change top GPU power level from 650MHz to 700MHz
+GPU_DTS="${WORK_DIR}/kernel/arch/arm/boot/dts/qcom/msm8953-gpu.dtsi"
+[[ -f "$GPU_DTS" ]] || die "GPU DTS not found: $GPU_DTS"
+grep -q "$STOCK_GPU_HZ" "$GPU_DTS" \
+  || die "Stock GPU freq $STOCK_GPU_HZ not found in $GPU_DTS"
+sed -i "s/${STOCK_GPU_HZ}/${TARGET_GPU_HZ}/g" "$GPU_DTS"
+note "GPU DTS: ${STOCK_GPU_HZ} -> ${TARGET_GPU_HZ} Hz (${TARGET_GPU_HZ:-0} occurrence(s))"
 
 # ============================================================
 # 3. Build kernel
