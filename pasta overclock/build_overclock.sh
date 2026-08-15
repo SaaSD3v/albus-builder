@@ -207,6 +207,50 @@ cc \
   || die "dt.img does not contain the QCDT magic"
 
 # ============================================================
+# 4b. Binary-patch DTBs inside QCDT image
+# ============================================================
+# make dtbs with ARCH=arm64 does not build MSM8953 DTBs (arch/arm/boot/dts/),
+# so DTS source patches have no effect on compiled DTBs.
+# Binary-patch the QCDT image directly to force the overclocked frequencies.
+note "Binary-patch QCDT image for overclock frequencies"
+python3 - "${WORK_DIR}/dt.img" "$TARGET_GPU_HZ" "$STOCK_GPU_HZ" "$TARGET_CPU_KHZ" "$STOCK_CPU_KHZ" <<'PYEOF'
+import sys, struct
+
+path = sys.argv[1]
+target_gpu = int(sys.argv[2])
+stock_gpu  = int(sys.argv[3])
+target_cpu = int(sys.argv[4])
+stock_cpu  = int(sys.argv[5])
+
+with open(path, 'rb') as f:
+    data = bytearray(f.read())
+
+gpu_old = struct.pack('>I', stock_gpu)
+gpu_new = struct.pack('>I', target_gpu)
+cpu_old = struct.pack('>I', stock_cpu)
+cpu_new = struct.pack('>I', target_cpu)
+
+gpu_count = data.count(gpu_old)
+cpu_count = data.count(cpu_old)
+
+if gpu_count == 0:
+    print(f"WARNING: stock GPU freq {stock_gpu} Hz not found in DT image")
+else:
+    data = data.replace(gpu_old, gpu_new)
+
+if cpu_count == 0:
+    print(f"WARNING: stock CPU freq {stock_cpu} KHz not found in DT image")
+else:
+    data = data.replace(cpu_old, cpu_new)
+
+with open(path, 'wb') as f:
+    f.write(data)
+
+print(f"GPU: {gpu_count} occurrence(s) of {stock_gpu} -> {target_gpu} Hz")
+print(f"CPU: {cpu_count} occurrence(s) of {stock_cpu} -> {target_cpu} KHz")
+PYEOF
+
+# ============================================================
 # 5. Download magiskboot and TWRP
 # ============================================================
 note "Download magiskboot"
