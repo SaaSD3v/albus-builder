@@ -11,6 +11,7 @@ readonly CPU_MHZ="${CPU_MHZ:-2300}"
 # Stock frequencies
 readonly STOCK_GPU_HZ=650000000
 readonly STOCK_CPU_KHZ=2208000
+readonly STOCK_CPU_HZ=$((STOCK_CPU_KHZ * 1000))
 
 # Target frequencies
 readonly TARGET_GPU_HZ=$((GPU_MHZ * 1000000))
@@ -269,7 +270,61 @@ if grep -q "<${TARGET_GPU_HZ}>" "$DTS_DECOMPILED" 2>/dev/null || \
    grep -q "< ${TARGET_GPU_HZ}" "$DTS_DECOMPILED" 2>/dev/null; then
   note "DTB GPU freq contains ${TARGET_GPU_HZ} Hz"
 else
-  note "WARNING: DTB GPU freq MISSING ${TARGET_GPU_HZ} Hz"
+  note "DTB GPU freq MISSING ${TARGET_GPU_HZ} Hz"
+fi
+
+# ============================================================
+# 3c. Fix DTBs: decompile, patch, recompile
+# ============================================================
+# make dtbs with ARCH=arm64 does NOT recompile msm8953 DTBs from
+# patched source (confirmed by verification above).
+# Fix: decompile each DTB, sed the values, recompile.
+note "Fix DTBs: decompile -> patch -> recompile"
+DTC_BIN="${WORK_DIR}/kernel-out/scripts/dtc/dtc"
+
+for dtb_file in "${WORK_DIR}/kernel-out/arch/arm64/boot/dts/qcom/msm8953-albus-"*.dtb; do
+  [[ -f "$dtb_file" ]] || continue
+  dtb_name="$(basename "$dtb_file")"
+  dts_temp="${DTBCHECK_DIR}/${dtb_name%.dts}.dts"
+  dtb_fixed="${DTBCHECK_DIR}/${dtb_name}"
+
+  # Decompile
+  "$DTC_BIN" -I dtb -O dts -o "$dts_temp" "$dtb_file" 2>/dev/null \
+    || die "Failed to decompile $dtb_name"
+
+  # Patch cpufreq-table: replace stock CPU freq with target
+  sed -i "s/< ${STOCK_CPU_KHZ} >/< ${TARGET_CPU_KHZ} >/g" "$dts_temp"
+
+  # Patch speed-bin tables: replace stock Hz with target (keep level 9)
+  sed -i "s/${STOCK_CPU_HZ} 9/${TARGET_CPU_HZ} 9/g" "$dts_temp"
+
+  # Patch GPU freq in gfxfreq-corner
+  sed -i "s/< ${STOCK_GPU_HZ}/< ${TARGET_GPU_HZ}/g" "$dts_temp"
+
+  # Recompile with padding for property additions
+  "$DTC_BIN" -I dts -O dtb -p 0x2000 -o "$dtb_fixed" "$dts_temp" 2>/dev/null \
+    || die "Failed to recompile $dtb_name"
+
+  # Replace original DTB with fixed version
+  cp "$dtb_fixed" "$dtb_file"
+
+  note "Fixed: $dtb_name"
+done
+
+# Verify one fixed DTB
+"$DTC_BIN" -I dtb -O dts -o "${DTBCHECK_DIR}/verify.dts" \
+  "${WORK_DIR}/kernel-out/arch/arm64/boot/dts/qcom/msm8953-albus-p4.dtb" 2>/dev/null
+
+if grep -q "< ${TARGET_CPU_KHZ} >" "${DTBCHECK_DIR}/verify.dts"; then
+  note "VERIFIED: cpufreq-table has ${TARGET_CPU_KHZ} KHz"
+else
+  die "FIX FAILED: cpufreq-table still missing ${TARGET_CPU_KHZ} KHz"
+fi
+
+if grep -q "${TARGET_CPU_HZ} 9" "${DTBCHECK_DIR}/verify.dts"; then
+  note "VERIFIED: speed-bin has ${TARGET_CPU_HZ} Hz"
+else
+  die "FIX FAILED: speed-bin still missing ${TARGET_CPU_HZ} Hz"
 fi
 
 # ============================================================
