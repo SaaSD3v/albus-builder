@@ -166,18 +166,18 @@ note "GPU clock: 650MHz -> 700MHz (gpll3 1400MHz/1)"
 CPU_DTS="${WORK_DIR}/kernel/arch/arm/boot/dts/qcom/msm8953.dtsi"
 [[ -f "$CPU_DTS" ]] || die "CPU DTS not found: $CPU_DTS"
 
-# 3a: Patch cpufreq-table (KHz values, add 2300000 at end)
+# 3a: Patch cpufreq-table (KHz values, REPLACE 2208000 with 2300000)
 grep -q "< ${STOCK_CPU_KHZ} >" "$CPU_DTS" \
   || die "Stock CPU freq ${STOCK_CPU_KHZ} not found in cpufreq-table"
-sed -i "s/< ${STOCK_CPU_KHZ} >/< ${STOCK_CPU_KHZ} >,\n         < ${TARGET_CPU_KHZ} >/" "$CPU_DTS"
-note "CPU cpufreq-table: added ${TARGET_CPU_KHZ} KHz"
+sed -i "s/< ${STOCK_CPU_KHZ} >/< ${TARGET_CPU_KHZ} >/g" "$CPU_DTS"
+note "CPU cpufreq-table: ${STOCK_CPU_KHZ} -> ${TARGET_CPU_KHZ} KHz"
 
-# 3b: Patch speed-bin tables (Hz values, add 2300000000 entry)
-# All speedX-bin-vX-cl entries end with 2208000000. Add 2300000000 after each.
+# 3b: Patch speed-bin tables (Hz values, REPLACE 2208000000 with 2300000000)
+# Reuse level 9 to avoid needing new clock driver level mappings.
 grep -q "2208000000" "$CPU_DTS" \
   || die "Stock CPU 2208000000 Hz not found in speed-bin tables"
-sed -i '/2208000000/s/2208000000 9/2208000000 9>,\n        < 2300000000 10/' "$CPU_DTS"
-note "CPU speed-bin tables: added 2300000000 Hz"
+sed -i 's/2208000000 9/2300000000 9/g' "$CPU_DTS"
+note "CPU speed-bin tables: 2208000000 -> 2300000000 Hz (level 9)"
 
 # 3c: Patch gfxfreq-corner (add 700000000)
 grep -q "650000000" "$CPU_DTS" \
