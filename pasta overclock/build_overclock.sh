@@ -252,12 +252,12 @@ cc \
   || die "dt.img does not contain the QCDT magic"
 
 # ============================================================
-# 4b. Binary-patch DTBs inside QCDT image
+# 4b. Verify DT image has overclocked values
 # ============================================================
-# make dtbs with ARCH=arm64 does not build MSM8953 DTBs (arch/arm/boot/dts/),
-# so DTS source patches have no effect on compiled DTBs.
-# Binary-patch the QCDT image directly to force the overclocked frequencies.
-note "Binary-patch QCDT image for overclock frequencies"
+# DTS source patches are compiled into DTBs by make dtbs (ARCH=arm64
+# does build msm8953 DTBs from arch/arm64/boot/dts/qcom/).
+# Binary-patch is REMOVED because blind search-replace corrupts
+# unrelated DT properties that happen to share the same value.
 python3 - "${WORK_DIR}/dt.img" "$TARGET_GPU_HZ" "$STOCK_GPU_HZ" "$TARGET_CPU_KHZ" "$STOCK_CPU_KHZ" <<'PYEOF'
 import sys, struct
 
@@ -268,31 +268,25 @@ target_cpu = int(sys.argv[4])
 stock_cpu  = int(sys.argv[5])
 
 with open(path, 'rb') as f:
-    data = bytearray(f.read())
+    data = f.read()
 
 gpu_old = struct.pack('>I', stock_gpu)
 gpu_new = struct.pack('>I', target_gpu)
 cpu_old = struct.pack('>I', stock_cpu)
 cpu_new = struct.pack('>I', target_cpu)
 
-gpu_count = data.count(gpu_old)
-cpu_count = data.count(cpu_old)
+gpu_stock = data.count(gpu_old)
+gpu_oc    = data.count(gpu_new)
+cpu_stock = data.count(cpu_old)
+cpu_oc    = data.count(cpu_new)
 
-if gpu_count == 0:
-    print(f"WARNING: stock GPU freq {stock_gpu} Hz not found in DT image")
-else:
-    data = data.replace(gpu_old, gpu_new)
+print(f"GPU stock {stock_gpu}Hz: {gpu_stock} remaining, {gpu_oc} OC entries")
+print(f"CPU stock {stock_cpu}KHz: {cpu_stock} remaining, {cpu_oc} OC entries")
 
-if cpu_count == 0:
-    print(f"WARNING: stock CPU freq {stock_cpu} KHz not found in DT image")
-else:
-    data = data.replace(cpu_old, cpu_new)
-
-with open(path, 'wb') as f:
-    f.write(data)
-
-print(f"GPU: {gpu_count} occurrence(s) of {stock_gpu} -> {target_gpu} Hz")
-print(f"CPU: {cpu_count} occurrence(s) of {stock_cpu} -> {target_cpu} KHz")
+if gpu_stock > 0 and gpu_oc == 0:
+    print(f"WARNING: GPU DTBs not patched (stock still present)")
+if cpu_stock > 0 and cpu_oc == 0:
+    print(f"WARNING: CPU DTBs not patched (stock still present)")
 PYEOF
 
 # ============================================================
