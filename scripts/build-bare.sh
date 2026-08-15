@@ -208,6 +208,10 @@ fi
 require_config 'CONFIG_RD_LZMA=y'
 require_config 'CONFIG_DECOMPRESS_LZMA=y'
 
+note "Apply dtc yylloc fix for modern hosts"
+sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' "${KERNEL_DIR}/scripts/dtc/dtc-lexer.l"
+sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' "${KERNEL_DIR}/scripts/dtc/dtc-lexer.lex.c_shipped"
+
 note "Build Image.gz and device trees"
 make \
   --jobs="${JOBS:-$(nproc)}" \
