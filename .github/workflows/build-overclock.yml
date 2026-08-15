@@ -22,11 +22,28 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            bc \
+            bison \
+            build-essential \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libssl-dev \
+            lzma \
+            python-is-python3 \
+            unzip \
+            xz-utils
 
       - name: Build overclocked recovery
         env:
@@ -34,7 +51,6 @@ jobs:
           CPU_MHZ: ${{ github.event.inputs.cpu_mhz || '2300' }}
         run: |
           chmod +x "pasta overclock/build_overclock.sh"
-          chmod +x "pasta overclock/overclock_dt.py"
           bash "pasta overclock/build_overclock.sh"
 
       - name: Upload recovery
