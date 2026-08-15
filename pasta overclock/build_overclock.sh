@@ -32,74 +32,6 @@ check_sha256() {
   [[ "$actual" == "$expected" ]] || die "SHA-256 mismatch for $file: expected $expected, got $actual"
 }
 
-check_size() {
-  local expected="$1"
-  local file="$2"
-  local actual
-  actual="$(stat -c '%s' "$file")"
-  [[ "$actual" == "$expected" ]] || die "size mismatch for $file: expected $expected, got $actual"
-}
-
-read_u32_le() {
-  od -An -tu4 -j "$2" -N4 "$1" | tr -d '[:space:]'
-}
-
-compare_range() {
-  local original="$1"
-  local rebuilt="$2"
-  local offset="$3"
-  local length="$4"
-  local description="$5"
-
-  cmp -s \
-    <(dd if="$original" bs=1 skip="$offset" count="$length" status=none) \
-    <(dd if="$rebuilt" bs=1 skip="$offset" count="$length" status=none) \
-    || die "$description changed during repack"
-}
-
-clone_commit() {
-  local repo="$1"
-  local commit="$2"
-  local destination="$3"
-
-  git init --quiet "$destination"
-  git -C "$destination" remote add origin "$repo"
-  git -C "$destination" fetch --quiet --depth=1 origin "$commit"
-  git -C "$destination" checkout --quiet --detach FETCH_HEAD
-  [[ "$(git -C "$destination" rev-parse HEAD)" == "$commit" ]] \
-    || die "failed to checkout $commit from $repo"
-}
-
-clone_tag() {
-  local repo="$1"
-  local tag="$2"
-  local expected_tag_object="$3"
-  local expected_commit="$4"
-  local destination="$5"
-
-  git -c advice.detachedHead=false clone --quiet --depth=1 --branch "$tag" "$repo" "$destination"
-  [[ "$(git -C "$destination" rev-parse "refs/tags/$tag")" == "$expected_tag_object" ]] \
-    || die "unexpected tag object for $repo tag $tag"
-  [[ "$(git -C "$destination" rev-parse HEAD)" == "$expected_commit" ]] \
-    || die "unexpected commit for $repo tag $tag"
-}
-
-readonly KERNEL_REPO="https://github.com/SaaSD3v/android_kernel_motorola_msm8996.git"
-readonly KERNEL_COMMIT="516086ce0637a9e820793695a4dd8e3ff43e055b"
-
-readonly TOOLCHAIN_TAG="android-8.1.0_r52"
-readonly AARCH64_TOOLCHAIN_REPO="https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
-readonly AARCH64_TOOLCHAIN_TAG_OBJECT="01a44495e0d50ba06b0b43ebc94a00bdaa4240bb"
-readonly AARCH64_TOOLCHAIN_COMMIT="7a28c220c2e9001825328dca6188ef0077a80a88"
-readonly ARM_TOOLCHAIN_REPO="https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9"
-readonly ARM_TOOLCHAIN_TAG_OBJECT="8467f03d870283b5b494b9b0b52b3cb19eb8f2df"
-readonly ARM_TOOLCHAIN_COMMIT="c348b64ea1e2015a576485aa787dc70dda9ef396"
-
-readonly DTBTOOL_REPO="https://github.com/LineageOS/android_device_motorola_potter.git"
-readonly DTBTOOL_COMMIT="ad60ebfd1f623cc55b962b98d5b57758124edb74"
-readonly REFERENCE_DT_SHA256="7074cd910d736a09a402531d62c5601c7dbfb99be6345515c3a4d06d9e06f145"
-readonly EXPECTED_DT_SIZE=1765376
-
 readonly TWRP_FILE="twrp-3.5.0_9-0-albus.img"
 readonly TWRP_PAGE="https://dl.twrp.me/albus/${TWRP_FILE}.html"
 readonly TWRP_URL="https://dl.twrp.me/albus/${TWRP_FILE}"
@@ -123,67 +55,7 @@ readonly WORK_DIR
 mkdir -p "$ARTIFACT_DIR"
 mkdir -p "$WORK_DIR/tools"
 
-note "=== BUILD OVERCLOCK: GPU=${GPU_MHZ} MHz, CPU=${CPU_MHZ} MHz ==="
-
-note "Clone the pinned kernel and toolchains"
-clone_commit "$KERNEL_REPO" "$KERNEL_COMMIT" "${WORK_DIR}/kernel"
-clone_tag "$AARCH64_TOOLCHAIN_REPO" "$TOOLCHAIN_TAG" "$AARCH64_TOOLCHAIN_TAG_OBJECT" "$AARCH64_TOOLCHAIN_COMMIT" "${WORK_DIR}/aarch64-toolchain"
-clone_tag "$ARM_TOOLCHAIN_REPO" "$TOOLCHAIN_TAG" "$ARM_TOOLCHAIN_TAG_OBJECT" "$ARM_TOOLCHAIN_COMMIT" "${WORK_DIR}/arm-toolchain"
-clone_commit "$DTBTOOL_REPO" "$DTBTOOL_COMMIT" "${WORK_DIR}/dtbtool"
-
-export ARCH=arm64
-export SUBARCH=arm64
-export CROSS_COMPILE="${WORK_DIR}/aarch64-toolchain/bin/aarch64-linux-android-"
-export CROSS_COMPILE_ARM32="${WORK_DIR}/arm-toolchain/bin/arm-linux-androideabi-"
-export PATH="${WORK_DIR}/aarch64-toolchain/bin:${WORK_DIR}/arm-toolchain/bin:${PATH}"
-
-readonly MAKE_ARGS=(
-  -C "${WORK_DIR}/kernel"
-  "O=${WORK_DIR}/kernel-out"
-  "ARCH=$ARCH"
-  "SUBARCH=$SUBARCH"
-  "CROSS_COMPILE=$CROSS_COMPILE"
-  "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
-)
-
-note "Configure kernel"
-make "${MAKE_ARGS[@]}" albus_defconfig
-
-readonly KERNEL_CONFIG="${WORK_DIR}/kernel-out/.config"
-"${WORK_DIR}/kernel/scripts/config" --file "$KERNEL_CONFIG" --enable RD_LZMA
-make "${MAKE_ARGS[@]}" olddefconfig
-
-note "Build Image.gz and device trees"
-make \
-  --jobs="${JOBS:-$(nproc)}" \
-  "${MAKE_ARGS[@]}" \
-  KCFLAGS=-mno-android \
-  Image.gz \
-  dtbs
-
-readonly KERNEL_IMAGE="${WORK_DIR}/kernel-out/arch/arm64/boot/Image.gz"
-readonly VMLINUX="${WORK_DIR}/kernel-out/vmlinux"
-[[ -s "$KERNEL_IMAGE" ]] || die "Image.gz was not produced"
-[[ -s "$VMLINUX" ]] || die "vmlinux was not produced"
-
-note "Build the Motorola QCDT v3 image"
-cc \
-  -O2 \
-  -Wall \
-  "${WORK_DIR}/dtbtool/dtbtool/dtbtool.c" \
-  -o "${WORK_DIR}/tools/dtbTool_custom"
-
-"${WORK_DIR}/tools/dtbTool_custom" \
-  --force-v3 \
-  --motorola 1 \
-  -o "${WORK_DIR}/dt_orig.img" \
-  -s 2048 \
-  -p "${WORK_DIR}/kernel-out/scripts/dtc/" \
-  "${WORK_DIR}/kernel-out/arch/arm64/boot/"
-
-[[ "$(dd if="${WORK_DIR}/dt_orig.img" bs=1 count=4 status=none)" == "QCDT" ]] \
-  || die "dt_orig.img does not contain the QCDT magic"
-check_size "$EXPECTED_DT_SIZE" "${WORK_DIR}/dt_orig.img"
+note "=== OVERCLOCK RECOVERY: GPU=${GPU_MHZ} MHz, CPU=${CPU_MHZ} MHz ==="
 
 note "Download and verify magiskboot"
 readonly MAGISK_APK="${WORK_DIR}/Magisk-v${MAGISK_VERSION}.apk"
@@ -201,7 +73,7 @@ unzip -p "$MAGISK_APK" lib/x86_64/libmagiskboot.so > "$MAGISKBOOT"
 check_sha256 "$MAGISKBOOT_SHA256" "$MAGISKBOOT"
 chmod 0755 "$MAGISKBOOT"
 
-note "Download and verify the official recovery base"
+note "Download and verify the official TWRP recovery"
 curl \
   --fail \
   --location \
@@ -215,7 +87,7 @@ curl \
 check_sha256 "$TWRP_SHA256" "${WORK_DIR}/${TWRP_FILE}"
 check_size "$TWRP_SIZE" "${WORK_DIR}/${TWRP_FILE}"
 
-note "Unpack the official recovery"
+note "Unpack the official TWRP recovery"
 readonly REPACK_DIR="${WORK_DIR}/repack"
 mkdir "$REPACK_DIR"
 (
@@ -223,21 +95,27 @@ mkdir "$REPACK_DIR"
   "$MAGISKBOOT" unpack -n "${WORK_DIR}/${TWRP_FILE}"
 )
 
-[[ -f "${REPACK_DIR}/kernel" ]] || die "magiskboot did not extract the base kernel"
-[[ -f "${REPACK_DIR}/ramdisk.cpio" ]] || die "magiskboot did not extract the base ramdisk"
-[[ -f "${REPACK_DIR}/extra" ]] || die "magiskboot did not extract the separated DT image"
+[[ -f "${REPACK_DIR}/kernel" ]] || die "magiskboot did not extract the kernel"
+[[ -f "${REPACK_DIR}/ramdisk.cpio" ]] || die "magiskboot did not extract the ramdisk"
+[[ -f "${REPACK_DIR}/extra" ]] || die "magiskboot did not extract the DT (extra)"
 
-note "=== PATCH DT.img WITH OVERCLOCK ==="
+check_sha256 "$TWRP_KERNEL_SHA256" "${REPACK_DIR}/kernel"
+check_sha256 "$TWRP_RAMDISK_SHA256" "${REPACK_DIR}/ramdisk.cpio"
+check_sha256 "$TWRP_DT_SHA256" "${REPACK_DIR}/extra"
+
+note "=== PATCH DT WITH OVERCLOCK ==="
+note "GPU: 650 MHz -> ${GPU_MHZ} MHz"
+note "CPU: 2208 MHz -> ${CPU_MHZ} MHz"
+
 python3 "${OC_DIR}/overclock_dt.py" \
-  "${WORK_DIR}/dt_orig.img" \
+  "${REPACK_DIR}/extra" \
   "${WORK_DIR}/dt_oc.img" \
   --gpu-mhz "$GPU_MHZ" \
   --cpu-mhz "$CPU_MHZ"
 
-[[ -s "${WORK_DIR}/dt_oc.img" ]] || die "Patched dt.img was not produced"
+[[ -s "${WORK_DIR}/dt_oc.img" ]] || die "Patched DT was not produced"
 
 note "Repack recovery.img with overclocked DT"
-cp "$KERNEL_IMAGE" "${REPACK_DIR}/kernel"
 cp "${WORK_DIR}/dt_oc.img" "${REPACK_DIR}/extra"
 
 (
@@ -254,33 +132,11 @@ mkdir "$VERIFY_DIR"
   "$MAGISKBOOT" unpack -n "${ARTIFACT_DIR}/recovery.img"
 )
 
-cmp -s "$KERNEL_IMAGE" "${VERIFY_DIR}/kernel" \
-  || die "the repacked kernel differs from Image.gz"
+cmp -s "${REPACK_DIR}/kernel" "${VERIFY_DIR}/kernel" \
+  || die "kernel was modified during repack"
 cmp -s "${WORK_DIR}/dt_oc.img" "${VERIFY_DIR}/extra" \
-  || die "the repacked DT differs from patched dt.img"
+  || die "DT was modified during repack"
 check_sha256 "$TWRP_RAMDISK_SHA256" "${VERIFY_DIR}/ramdisk.cpio"
-
-compare_range "${WORK_DIR}/${TWRP_FILE}" "${ARTIFACT_DIR}/recovery.img" 12 4 "kernel address"
-compare_range "${WORK_DIR}/${TWRP_FILE}" "${ARTIFACT_DIR}/recovery.img" 20 4 "ramdisk address"
-compare_range "${WORK_DIR}/${TWRP_FILE}" "${ARTIFACT_DIR}/recovery.img" 24 4 "second-stage size"
-compare_range "${WORK_DIR}/${TWRP_FILE}" "${ARTIFACT_DIR}/recovery.img" 28 4 "second-stage address"
-compare_range "${WORK_DIR}/${TWRP_FILE}" "${ARTIFACT_DIR}/recovery.img" 32 4 "tags address"
-compare_range "${WORK_DIR}/${TWRP_FILE}" "${ARTIFACT_DIR}/recovery.img" 36 4 "page size"
-compare_range "${WORK_DIR}/${TWRP_FILE}" "${ARTIFACT_DIR}/recovery.img" 44 4 "legacy header flags"
-compare_range "${WORK_DIR}/${TWRP_FILE}" "${ARTIFACT_DIR}/recovery.img" 48 16 "board name"
-compare_range "${WORK_DIR}/${TWRP_FILE}" "${ARTIFACT_DIR}/recovery.img" 64 512 "kernel command line"
-compare_range "${WORK_DIR}/${TWRP_FILE}" "${ARTIFACT_DIR}/recovery.img" 608 1024 "extra kernel command line"
-
-KERNEL_SIZE="$(stat -c '%s' "$KERNEL_IMAGE")"
-RAMDISK_SIZE="$(stat -c '%s' "${VERIFY_DIR}/ramdisk.cpio")"
-OC_DT_SIZE="$(stat -c '%s' "${WORK_DIR}/dt_oc.img")"
-
-[[ "$(read_u32_le "${ARTIFACT_DIR}/recovery.img" 8)" == "$KERNEL_SIZE" ]] \
-  || die "kernel size in the boot header is incorrect"
-[[ "$(read_u32_le "${ARTIFACT_DIR}/recovery.img" 16)" == "$RAMDISK_SIZE" ]] \
-  || die "ramdisk size in the boot header is incorrect"
-[[ "$(read_u32_le "${ARTIFACT_DIR}/recovery.img" 40)" == "$OC_DT_SIZE" ]] \
-  || die "DT size in the boot header is incorrect"
 
 FINAL_SIZE="$(stat -c '%s' "${ARTIFACT_DIR}/recovery.img")"
 readonly FINAL_SIZE
@@ -288,22 +144,15 @@ readonly FINAL_SIZE
   || die "recovery.img is ${FINAL_SIZE} bytes; partition limit is ${RECOVERY_PARTITION_SIZE}"
 
 note "Prepare build artifacts"
-cp "$KERNEL_IMAGE" "${ARTIFACT_DIR}/Image.gz"
+cp "${REPACK_DIR}/kernel" "${ARTIFACT_DIR}/Image.gz"
 cp "${WORK_DIR}/dt_oc.img" "${ARTIFACT_DIR}/dt.img"
-cp "$KERNEL_CONFIG" "${ARTIFACT_DIR}/kernel.config"
 
 FINAL_SHA256="$(sha256_of "${ARTIFACT_DIR}/recovery.img")"
 readonly FINAL_SHA256
-KERNEL_SHA256="$(sha256_of "$KERNEL_IMAGE")"
-readonly KERNEL_SHA256
+KERNEL_SHA256="$(sha256_of "${REPACK_DIR}/kernel")"
 DT_SHA256="$(sha256_of "${WORK_DIR}/dt_oc.img")"
-readonly DT_SHA256
-CONFIG_SHA256="$(sha256_of "$KERNEL_CONFIG")"
-readonly CONFIG_SHA256
 
 {
-  printf 'kernel_repository=%s\n' "$KERNEL_REPO"
-  printf 'kernel_commit=%s\n' "$KERNEL_COMMIT"
   printf 'twrp_base=%s\n' "$TWRP_FILE"
   printf 'twrp_base_sha256=%s\n' "$TWRP_SHA256"
   printf 'recovery_size=%s\n' "$FINAL_SIZE"
@@ -311,9 +160,6 @@ readonly CONFIG_SHA256
   printf 'recovery_sha256=%s\n' "$FINAL_SHA256"
   printf 'kernel_sha256=%s\n' "$KERNEL_SHA256"
   printf 'dt_sha256=%s\n' "$DT_SHA256"
-  printf 'config_sha256=%s\n' "$CONFIG_SHA256"
-  printf 'kernelsu=absent-from-source\n'
-  printf 'ramdisk_lzma=enabled\n'
   printf 'overclock_gpu_mhz=%s\n' "$GPU_MHZ"
   printf 'overclock_cpu_mhz=%s\n' "$CPU_MHZ"
 } > "${ARTIFACT_DIR}/build-info.txt"
@@ -324,7 +170,6 @@ readonly CONFIG_SHA256
     recovery.img \
     Image.gz \
     dt.img \
-    kernel.config \
     build-info.txt \
     > SHA256SUMS
 )

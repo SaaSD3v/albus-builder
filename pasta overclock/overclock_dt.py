@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Binary-patch GPU and CPU frequency tables in a Motorola QCDT v3 dt.img.
+Binary-patch GPU and CPU frequency values in a device-tree image.
 
-NO dtc needed. Direct binary replacement of known frequency values
-in each DTB blob inside the QCDT image.
+Works on both standalone DTB files and QCDT v3 Motorola containers.
+Does NOT use dtc - performs direct byte replacement of known stock
+frequency values to preserve all Qualcomm-specific properties.
 
 Usage:
-    python3 overclock_dt.py <input_dt.img> <output_dt.img> [--gpu-mhz 700] [--cpu-mhz 2300]
+    python3 overclock_dt.py <input> <output> [--gpu-mhz 700] [--cpu-mhz 2300]
 """
 
 import argparse
@@ -15,14 +16,21 @@ import sys
 
 QCDT_MAGIC = b"QCDT"
 ENTRY_SIZE_MOTO_V3 = 72
+FDT_MAGIC = b"\xd0\x0d\xfe\xed"
 
-# Stock GPU max freq in Hz (little-endian 4 bytes)
+# Known stock frequencies (Hz for GPU, KHz for CPU table entries)
+# These are the raw u32 values as they appear in the compiled DTB binary.
+# Snapdragon 626 / msm8953 stock OPPs:
+#   GPU: 200 320 400 480 520 560 580 600 620 640 650 MHz
+#   CPU: 300 400 500 600 700 800 900 1000 1200 1400 1600 1800 2000 2208 MHz
+#
+# qcom,gpu-freq uses Hz: 650000000 = 0x26BE3680
+# qcom,cpufreq-table uses KHz: 2208000 = 0x0021B100
 STOCK_GPU_HZ = 650_000_000
-STOCK_GPU_BYTES = struct.pack("<I", STOCK_GPU_HZ)
-
-# Stock CPU max freq in KHz (little-endian 4 bytes)
 STOCK_CPU_KHZ = 2_208_000
-STOCK_CPU_BYTES = struct.pack("<I", STOCK_CPU_KHZ)
+
+STOCK_GPU_LE = struct.pack("<I", STOCK_GPU_HZ)
+STOCK_CPU_LE = struct.pack("<I", STOCK_CPU_KHZ)
 
 
 def read_u32_le(data, offset):
@@ -33,10 +41,49 @@ def write_u32_le(value):
     return struct.pack("<I", value & 0xFFFFFFFF)
 
 
-def parse_qcdt(data):
-    if data[:4] != QCDT_MAGIC:
-        raise ValueError("Not a QCDT image")
+def find_all(data, needle):
+    results = []
+    start = 0
+    while True:
+        pos = data.find(needle, start)
+        if pos < 0:
+            break
+        results.append(pos)
+        start = pos + 1
+    return results
 
+
+def patch_binary_freqs(dtb, target_gpu_mhz, target_cpu_mhz):
+    """Patch stock freq values in a DTB blob. Returns (gpu_patched, cpu_patched)."""
+    target_gpu_hz = target_gpu_mhz * 1_000_000
+    target_cpu_khz = target_cpu_mhz * 1_000
+
+    gpu_le = struct.pack("<I", target_gpu_hz)
+    cpu_le = struct.pack("<I", target_cpu_khz)
+
+    gpu_count = 0
+    for pos in find_all(dtb, STOCK_GPU_LE):
+        dtb[pos : pos + 4] = gpu_le
+        gpu_count += 1
+
+    cpu_count = 0
+    for pos in find_all(dtb, STOCK_CPU_LE):
+        dtb[pos : pos + 4] = cpu_le
+        cpu_count += 1
+
+    return gpu_count, cpu_count
+
+
+def is_qcdt(data):
+    return data[:4] == QCDT_MAGIC
+
+
+def is_fdt(data):
+    return data[:4] == FDT_MAGIC
+
+
+def process_qcdt(data, target_gpu_mhz, target_cpu_mhz):
+    """Process a QCDT v3 Motorola container."""
     hdr_version = read_u32_le(data, 4)
     num_entries = read_u32_le(data, 8)
     mtor_version = (hdr_version >> 8) & 0xFF
@@ -45,7 +92,9 @@ def parse_qcdt(data):
     print(f"  QCDT version: {qcdt_version}, Motorola version: {mtor_version}")
     print(f"  Number of entries: {num_entries}")
 
-    entries = []
+    total_gpu = 0
+    total_cpu = 0
+
     for i in range(num_entries):
         offset = 12 + i * ENTRY_SIZE_MOTO_V3
         entry_data = data[offset : offset + ENTRY_SIZE_MOTO_V3]
@@ -54,171 +103,94 @@ def parse_qcdt(data):
         platform = read_u32_le(entry_data, 4)
         subtype = read_u32_le(entry_data, 8)
         soc_rev = read_u32_le(entry_data, 12)
-        pmic0 = read_u32_le(entry_data, 16)
-        pmic1 = read_u32_le(entry_data, 20)
-        pmic2 = read_u32_le(entry_data, 24)
-        pmic3 = read_u32_le(entry_data, 28)
         dtb_offset = read_u32_le(entry_data, 32)
         dtb_size = read_u32_le(entry_data, 36)
         model = entry_data[40:72].split(b"\x00")[0].decode("ascii", errors="replace")
 
-        entries.append(
-            {
-                "chipset": chipset,
-                "platform": platform,
-                "subtype": subtype,
-                "soc_rev": soc_rev,
-                "pmic": [pmic0, pmic1, pmic2, pmic3],
-                "dtb_offset": dtb_offset,
-                "dtb_size": dtb_size,
-                "model": model,
-                "dtb_data": b"",
-            }
-        )
+        if dtb_offset <= 0 or dtb_size <= 0:
+            print(f"  Entry {i}: no DTB, skipping")
+            continue
 
-        if dtb_offset > 0 and dtb_size > 0:
-            dtb_raw = data[dtb_offset : dtb_offset + dtb_size]
-            dtb_magic_pos = dtb_raw.find(b"\xd0\x0d\xfe\xed")
-            if dtb_magic_pos >= 0:
-                entries[-1]["dtb_data"] = bytearray(dtb_raw[dtb_magic_pos:])
-            else:
-                entries[-1]["dtb_data"] = bytearray(dtb_raw)
+        dtb_raw = bytearray(data[dtb_offset : dtb_offset + dtb_size])
 
+        gpu, cpu = patch_binary_freqs(dtb_raw, target_gpu_mhz, target_cpu_mhz)
+        total_gpu += gpu
+        total_cpu += cpu
+
+        status = "OK" if (gpu > 0 or cpu > 0) else "NO MATCHES"
         print(
-            f"  Entry {i}: chip=0x{chipset:x} plat=0x{platform:x} "
-            f"sub=0x{subtype:x} rev=0x{soc_rev:x} model={model!r} "
-            f"dtb_size={dtb_size}"
+            f"  Entry {i}: model={model!r} chip=0x{chipset:x} "
+            f"gpu_patched={gpu} cpu_patched={cpu} [{status}]"
         )
 
-    return {"hdr_version": hdr_version, "num_entries": num_entries, "entries": entries}
+        data[dtb_offset : dtb_offset + dtb_size] = dtb_raw
+
+    return total_gpu, total_cpu
 
 
-def find_all(dtb, needle):
-    """Find all offsets of needle in dtb."""
-    results = []
-    start = 0
-    while True:
-        pos = dtb.find(needle, start)
-        if pos < 0:
-            break
-        results.append(pos)
-        start = pos + 1
-    return results
-
-
-def patch_gpu_freq(dtb, target_mhz):
-    """Replace the GPU max freq (650 MHz) with target. Binary search+replace."""
-    target_hz = target_mhz * 1_000_000
-    target_bytes = struct.pack("<I", target_hz)
-
-    occurrences = find_all(dtb, STOCK_GPU_BYTES)
-    patched = 0
-    for pos in occurrences:
-        dtb[pos : pos + 4] = target_bytes
-        patched += 1
-
-    return patched
-
-
-def patch_cpu_freq(dtb, target_mhz):
-    """Replace the CPU max freq (2208 MHz) with target. Binary search+replace."""
-    target_khz = target_mhz * 1_000
-    target_bytes = struct.pack("<I", target_khz)
-
-    occurrences = find_all(dtb, STOCK_CPU_BYTES)
-    patched = 0
-    for pos in occurrences:
-        dtb[pos : pos + 4] = target_bytes
-        patched += 1
-
-    return patched
-
-
-def build_qcdt(image_info, page_size=2048):
-    """Rebuild QCDT v3 Motorola image."""
-    entries = image_info["entries"]
-
-    header_size = 12
-    table_size = header_size + len(entries) * ENTRY_SIZE_MOTO_V3 + 4
-    padding = page_size - (table_size % page_size)
-    if padding == page_size:
-        padding = 0
-    dtb_start = table_size + padding
-
-    current_offset = dtb_start
-    for entry in entries:
-        entry["new_offset"] = current_offset
-        dtb = entry["dtb_data"]
-        dtb_padded_size = len(dtb) + (page_size - (len(dtb) % page_size))
-        entry["new_size"] = dtb_padded_size
-        current_offset += dtb_padded_size
-
-    total_size = current_offset
-    output = bytearray(total_size)
-
-    output[0:4] = QCDT_MAGIC
-    output[4:8] = write_u32_le(image_info["hdr_version"])
-    output[8:12] = write_u32_le(len(entries))
-
-    for i, entry in enumerate(entries):
-        off = header_size + i * ENTRY_SIZE_MOTO_V3
-        output[off : off + 4] = write_u32_le(entry["chipset"])
-        output[off + 4 : off + 8] = write_u32_le(entry["platform"])
-        output[off + 8 : off + 12] = write_u32_le(entry["subtype"])
-        output[off + 12 : off + 16] = write_u32_le(entry["soc_rev"])
-        output[off + 16 : off + 20] = write_u32_le(entry["pmic"][0])
-        output[off + 20 : off + 24] = write_u32_le(entry["pmic"][1])
-        output[off + 24 : off + 28] = write_u32_le(entry["pmic"][2])
-        output[off + 28 : off + 32] = write_u32_le(entry["pmic"][3])
-        output[off + 32 : off + 36] = write_u32_le(entry["new_offset"])
-        output[off + 36 : off + 40] = write_u32_le(entry["new_size"])
-
-        model_bytes = entry["model"].encode("ascii")[:31]
-        model_bytes = model_bytes.ljust(32, b"\x00")
-        output[off + 40 : off + 72] = model_bytes
-
-    for entry in entries:
-        dtb = entry["dtb_data"]
-        output[entry["new_offset"] : entry["new_offset"] + len(dtb)] = dtb
-
-    return bytes(output)
+def process_fdt(data, target_gpu_mhz, target_cpu_mhz):
+    """Process a standalone FDT/DTB blob."""
+    dtb = bytearray(data)
+    gpu, cpu = patch_binary_freqs(dtb, target_gpu_mhz, target_cpu_mhz)
+    print(f"  FDT: gpu_patched={gpu} cpu_patched={cpu}")
+    return bytes(dtb), gpu, cpu
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Binary-patch GPU/CPU freq in QCDT dt.img")
-    parser.add_argument("input", help="Input dt.img path")
-    parser.add_argument("output", help="Output dt.img path")
-    parser.add_argument("--gpu-mhz", type=int, default=700, help="Target GPU MHz (default: 700)")
-    parser.add_argument("--cpu-mhz", type=int, default=2300, help="Target CPU MHz (default: 2300)")
+    parser = argparse.ArgumentParser(
+        description="Binary-patch GPU/CPU freq in DT image"
+    )
+    parser.add_argument("input", help="Input image (QCDT or DTB)")
+    parser.add_argument("output", help="Output image")
+    parser.add_argument(
+        "--gpu-mhz", type=int, default=700, help="Target GPU MHz (default: 700)"
+    )
+    parser.add_argument(
+        "--cpu-mhz", type=int, default=2300, help="Target CPU MHz (default: 2300)"
+    )
     args = parser.parse_args()
 
     with open(args.input, "rb") as f:
-        data = f.read()
+        data = bytearray(f.read())
 
     print(f"Input: {args.input} ({len(data)} bytes)")
-    image_info = parse_qcdt(data)
 
-    print(f"\nPatching to GPU={args.gpu_mhz} MHz, CPU={args.cpu_mhz} MHz")
+    if is_qcdt(data):
+        print("Format: QCDT v3 Motorola container")
+        gpu_total, cpu_total = process_qcdt(data, args.gpu_mhz, args.cpu_mhz)
+        output = bytes(data)
+    elif is_fdt(data):
+        print("Format: Standalone FDT/DTB")
+        output, gpu_total, cpu_total = process_fdt(data, args.gpu_mhz, args.cpu_mhz)
+    else:
+        # Could be a QCDT where FDT magic is at an offset
+        fdt_pos = data.find(FDT_MAGIC)
+        if fdt_pos >= 0:
+            print(f"Format: Unknown header, FDT found at offset {fdt_pos}")
+            print("  Attempting QCDT parse...")
+            try:
+                gpu_total, cpu_total = process_qcdt(
+                    data, args.gpu_mhz, args.cpu_mhz
+                )
+                output = bytes(data)
+            except Exception:
+                print("  QCDT parse failed, trying raw FDT patch...")
+                dtb = bytearray(data[fdt_pos:])
+                gpu_total, cpu_total = patch_binary_freqs(
+                    dtb, args.gpu_mhz, args.cpu_mhz
+                )
+                output = data[:fdt_pos] + bytes(dtb)
+        else:
+            print("ERROR: unrecognized image format (no QCDT or FDT magic found)")
+            sys.exit(1)
 
-    for i, entry in enumerate(image_info["entries"]):
-        if not entry["dtb_data"]:
-            print(f"  Entry {i}: no DTB data, skipping")
-            continue
+    print(f"\nResults: GPU patched={gpu_total}, CPU patched={cpu_total}")
 
-        print(f"\n  Processing entry {i} ({entry['model']!r})...")
-        dtb = entry["dtb_data"]
-
-        gpu_count = patch_gpu_freq(dtb, args.gpu_mhz)
-        print(f"  GPU: patched {gpu_count} occurrence(s) of {STOCK_GPU_HZ} Hz -> {args.gpu_mhz * 1_000_000} Hz")
-
-        cpu_count = patch_cpu_freq(dtb, args.cpu_mhz)
-        print(f"  CPU: patched {cpu_count} occurrence(s) of {STOCK_CPU_KHZ} KHz -> {args.cpu_mhz * 1_000} KHz")
-
-        if gpu_count == 0 and cpu_count == 0:
-            print(f"  WARNING: no matches found for stock frequencies in entry {i}!")
-
-    print("\nRebuilding QCDT image...")
-    output = build_qcdt(image_info)
+    if gpu_total == 0 and cpu_total == 0:
+        print("\nWARNING: No stock frequency values were found!")
+        print("  The image may use different frequency values than expected.")
+        print("  Output file will be identical to input.")
+        sys.exit(1)
 
     with open(args.output, "wb") as f:
         f.write(output)
