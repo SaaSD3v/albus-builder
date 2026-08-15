@@ -32,6 +32,14 @@ check_sha256() {
   [[ "$actual" == "$expected" ]] || die "SHA-256 mismatch for $file: expected $expected, got $actual"
 }
 
+check_size() {
+  local expected="$1"
+  local file="$2"
+  local actual
+  actual="$(stat -c '%s' "$file")"
+  [[ "$actual" == "$expected" ]] || die "size mismatch for $file: expected $expected, got $actual"
+}
+
 readonly TWRP_FILE="twrp-3.5.0_9-0-albus.img"
 readonly TWRP_PAGE="https://dl.twrp.me/albus/${TWRP_FILE}.html"
 readonly TWRP_URL="https://dl.twrp.me/albus/${TWRP_FILE}"
