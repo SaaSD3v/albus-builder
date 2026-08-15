@@ -231,6 +231,48 @@ readonly KERNEL_IMAGE="${WORK_DIR}/kernel-out/arch/arm64/boot/Image.gz"
 [[ -s "$KERNEL_IMAGE" ]] || die "Image.gz was not produced"
 
 # ============================================================
+# 3b. Verify compiled DTBs have overclocked values
+# ============================================================
+note "Verify DTBs have overclocked frequencies"
+DTB_VERIFY="${WORK_DIR}/kernel-out/arch/arm64/boot/dts/qcom/msm8953-albus-p4.dtb"
+[[ -f "$DTB_VERIFY" ]] || die "Verification DTB not found: $DTB_VERIFY"
+
+# Decompile DTB and check cpufreq-table and speed-bin values
+DTC="${WORK_DIR}/kernel-out/scripts/dtc/dtc"
+DTBCHECK_DIR="${WORK_DIR}/dtb-check"
+mkdir -p "$DTBCHECK_DIR"
+
+"${DTC}" -I dtb -O dts -o "${DTBCHECK_DIR}/msm8953-albus-p4.dts" "$DTB_VERIFY" 2>/dev/null
+
+DTS_DECOMPILED="${DTBCHECK_DIR}/msm8953-albus-p4.dts"
+[[ -f "$DTS_DECOMPILED" ]] || die "Failed to decompile DTB"
+
+# Check cpufreq-table for TARGET_CPU_KHZ
+if grep -q "< ${TARGET_CPU_KHZ} >" "$DTS_DECOMPILED"; then
+  note "DTB cpufreq-table contains ${TARGET_CPU_KHZ} KHz"
+else
+  note "WARNING: DTB cpufreq-table MISSING ${TARGET_CPU_KHZ} KHz"
+  note "Available cpufreq entries:"
+  grep -E '< *[0-9]+ *>' "$DTS_DECOMPILED" | head -20 || true
+fi
+
+# Check speed-bin table for TARGET_CPU_HZ
+TARGET_CPU_HZ=$((TARGET_CPU_KHZ * 1000))
+if grep -q "${TARGET_CPU_HZ}" "$DTS_DECOMPILED"; then
+  note "DTB speed-bin table contains ${TARGET_CPU_HZ} Hz"
+else
+  note "WARNING: DTB speed-bin table MISSING ${TARGET_CPU_HZ} Hz"
+fi
+
+# Check GPU freq
+if grep -q "<${TARGET_GPU_HZ}>" "$DTS_DECOMPILED" 2>/dev/null || \
+   grep -q "< ${TARGET_GPU_HZ}" "$DTS_DECOMPILED" 2>/dev/null; then
+  note "DTB GPU freq contains ${TARGET_GPU_HZ} Hz"
+else
+  note "WARNING: DTB GPU freq MISSING ${TARGET_GPU_HZ} Hz"
+fi
+
+# ============================================================
 # 4. Build QCDT v3 Motorola image
 # ============================================================
 note "Build QCDT v3 image"
