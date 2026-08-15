@@ -1,0 +1,63 @@
+name: Build recovery (Overclock)
+
+on:
+  workflow_dispatch:
+    inputs:
+      gpu_mhz:
+        description: "GPU MHz (stock: 650)"
+        required: false
+        default: "700"
+      cpu_mhz:
+        description: "CPU MHz (stock: 2208)"
+        required: false
+        default: "2300"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: overclock-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            bc \
+            bison \
+            build-essential \
+            curl \
+            device-tree-compiler \
+            flex \
+            git \
+            libelf-dev \
+            libssl-dev \
+            lzma \
+            python3 \
+            unzip \
+            xz-utils
+
+      - name: Build overclocked recovery
+        env:
+          GPU_MHZ: ${{ github.event.inputs.gpu_mhz || '700' }}
+          CPU_MHZ: ${{ github.event.inputs.cpu_mhz || '2300' }}
+        run: |
+          chmod +x "pasta overclock/build_overclock.sh"
+          chmod +x "pasta overclock/overclock_dt.py"
+          bash "pasta overclock/build_overclock.sh"
+
+      - name: Upload recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-overclock-gpu${{ github.event.inputs.gpu_mhz || '700' }}-cpu${{ github.event.inputs.cpu_mhz || '2300' }}
+          path: artifacts/*
+          if-no-files-found: error
