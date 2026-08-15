@@ -32,6 +32,14 @@ check_sha256() {
   [[ "$actual" == "$expected" ]] || die "SHA-256 mismatch for $file: expected $expected, got $actual"
 }
 
+check_size() {
+  local expected="$1"
+  local file="$2"
+  local actual
+  actual="$(stat -c '%s' "$file")"
+  [[ "$actual" == "$expected" ]] || die "size mismatch for $file: expected $expected, got $actual"
+}
+
 read_u32_le() {
   od -An -tu4 -j "$2" -N4 "$1" | tr -d '[:space:]'
 }
