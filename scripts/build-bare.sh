@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 readonly KERNEL_REPO="https://github.com/SaaSD3v/android_kernel_motorola_msm8996.git"
-readonly KERNEL_COMMIT="516086ce0637a9e820793695a4dd8e3ff43e055b"
+readonly KERNEL_COMMIT="064c1c410c6f174e6f4c1d4462502cbca5b8d57d"
 
 readonly TOOLCHAIN_TAG="android-8.1.0_r52"
 readonly AARCH64_TOOLCHAIN_REPO="https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
