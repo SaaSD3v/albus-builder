@@ -152,8 +152,8 @@ note "CPU patched: $(grep -c "$TARGET_CPU_KHZ" "$CPU_DTS") occurrence(s) of $TAR
 # ============================================================
 # 3. Build kernel
 # ============================================================
-export ARCH=arm
-export SUBARCH=arm
+export ARCH=arm64
+export SUBARCH=arm64
 export CROSS_COMPILE="${WORK_DIR}/aarch64-toolchain/bin/aarch64-linux-android-"
 export CROSS_COMPILE_ARM32="${WORK_DIR}/arm-toolchain/bin/arm-linux-androideabi-"
 export PATH="${WORK_DIR}/aarch64-toolchain/bin:${WORK_DIR}/arm-toolchain/bin:${PATH}"
