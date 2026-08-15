@@ -1,0 +1,57 @@
+name: Build recovery (Bare)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recovery-bare-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            bc \
+            bison \
+            build-essential \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libssl-dev \
+            lzma \
+            python-is-python3 \
+            unzip \
+            xz-utils
+
+      - name: Build kernel and recovery (bare)
+        run: bash scripts/build-bare.sh
+
+      - name: Upload to GoFile
+        run: |
+          SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
+          RESPONSE=$(curl -s -X POST "https://${SERVER}.gofile.io/contents/uploadfile" \
+            -H "Authorization: Bearer ${{ secrets.GOFILE_TOKEN }}" \
+            -F "file=@artifacts/recovery.img")
+          echo "$RESPONSE" | jq .
+          DOWNLOAD_PAGE=$(echo "$RESPONSE" | jq -r '.data.downloadPage')
+          echo "GoFile link: $DOWNLOAD_PAGE" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-bare
+          path: artifacts/*
+          if-no-files-found: error
