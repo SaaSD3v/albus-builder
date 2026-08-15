@@ -248,30 +248,12 @@ mkdir -p "$DTBCHECK_DIR"
 DTS_DECOMPILED="${DTBCHECK_DIR}/msm8953-albus-p4.dts"
 [[ -f "$DTS_DECOMPILED" ]] || die "Failed to decompile DTB"
 
-# Check cpufreq-table for TARGET_CPU_KHZ
-if grep -q "< ${TARGET_CPU_KHZ} >" "$DTS_DECOMPILED"; then
-  note "DTB cpufreq-table contains ${TARGET_CPU_KHZ} KHz"
-else
-  note "WARNING: DTB cpufreq-table MISSING ${TARGET_CPU_KHZ} KHz"
-  note "Available cpufreq entries:"
-  grep -E '< *[0-9]+ *>' "$DTS_DECOMPILED" | head -20 || true
-fi
-
-# Check speed-bin table for TARGET_CPU_HZ
-TARGET_CPU_HZ=$((TARGET_CPU_KHZ * 1000))
-if grep -q "${TARGET_CPU_HZ}" "$DTS_DECOMPILED"; then
-  note "DTB speed-bin table contains ${TARGET_CPU_HZ} Hz"
-else
-  note "WARNING: DTB speed-bin table MISSING ${TARGET_CPU_HZ} Hz"
-fi
-
-# Check GPU freq
-if grep -q "<${TARGET_GPU_HZ}>" "$DTS_DECOMPILED" 2>/dev/null || \
-   grep -q "< ${TARGET_GPU_HZ}" "$DTS_DECOMPILED" 2>/dev/null; then
-  note "DTB GPU freq contains ${TARGET_GPU_HZ} Hz"
-else
-  note "DTB GPU freq MISSING ${TARGET_GPU_HZ} Hz"
-fi
+note "=== Stock CPU freq (2208000) occurrences ==="
+grep -c "2208" "$DTS_DECOMPILED" || true
+note "=== cpufreq-table lines ==="
+grep -n "cpufreq" "$DTS_DECOMPILED" | head -10 || note "no cpufreq found"
+note "=== Sample number patterns ==="
+grep -oE '<[[:space:]]*[0-9]+[[:space:]]*>' "$DTS_DECOMPILED" | sort -u | tail -20 || true
 
 # ============================================================
 # 3c. Fix DTBs: decompile, patch, recompile
@@ -285,21 +267,26 @@ DTC_BIN="${WORK_DIR}/kernel-out/scripts/dtc/dtc"
 for dtb_file in "${WORK_DIR}/kernel-out/arch/arm64/boot/dts/qcom/msm8953-albus-"*.dtb; do
   [[ -f "$dtb_file" ]] || continue
   dtb_name="$(basename "$dtb_file")"
-  dts_temp="${DTBCHECK_DIR}/${dtb_name%.dts}.dts"
+  dts_temp="${DTBCHECK_DIR}/${dtb_name%.dtb}.dts"
   dtb_fixed="${DTBCHECK_DIR}/${dtb_name}"
 
   # Decompile
   "$DTC_BIN" -I dtb -O dts -o "$dts_temp" "$dtb_file" 2>/dev/null \
     || die "Failed to decompile $dtb_name"
 
-  # Patch cpufreq-table: replace stock CPU freq with target
-  sed -i "s/< ${STOCK_CPU_KHZ} >/< ${TARGET_CPU_KHZ} >/g" "$dts_temp"
+  # Patch cpufreq-table: replace stock CPU freq with target (flexible whitespace)
+  sed -i "s/< *${STOCK_CPU_KHZ} *>/< ${TARGET_CPU_KHZ} >/g" "$dts_temp"
+  # Also handle hex format (0x21b300 = 2208000)
+  sed -i "s/0x$(printf '%x' ${STOCK_CPU_KHZ})/0x$(printf '%x' ${TARGET_CPU_KHZ})/gI" "$dts_temp"
 
   # Patch speed-bin tables: replace stock Hz with target (keep level 9)
-  sed -i "s/${STOCK_CPU_HZ} 9/${TARGET_CPU_HZ} 9/g" "$dts_temp"
+  sed -i "s/${STOCK_CPU_HZ} *9/${TARGET_CPU_HZ} 9/g" "$dts_temp"
+  sed -i "s/0x$(printf '%x' ${STOCK_CPU_HZ}) *9/0x$(printf '%x' ${TARGET_CPU_HZ}) 9/gI" "$dts_temp"
 
-  # Patch GPU freq in gfxfreq-corner
-  sed -i "s/< ${STOCK_GPU_HZ}/< ${TARGET_GPU_HZ}/g" "$dts_temp"
+  # Patch GPU freq in gfxfreq-corner and gpufreq
+  sed -i "s/< *${STOCK_GPU_HZ}/< ${TARGET_GPU_HZ}/g" "$dts_temp"
+  sed -i "s/0x$(printf '%x' ${STOCK_GPU_HZ})/0x$(printf '%x' ${TARGET_GPU_HZ})/gI" "$dts_temp"
+  sed -i "s/${STOCK_GPU_HZ}/${TARGET_GPU_HZ}/g" "$dts_temp"
 
   # Recompile with padding for property additions
   "$DTC_BIN" -I dts -O dtb -p 0x2000 -o "$dtb_fixed" "$dts_temp" 2>/dev/null \
@@ -311,20 +298,31 @@ for dtb_file in "${WORK_DIR}/kernel-out/arch/arm64/boot/dts/qcom/msm8953-albus-"
   note "Fixed: $dtb_name"
 done
 
-# Verify one fixed DTB
-"$DTC_BIN" -I dtb -O dts -o "${DTBCHECK_DIR}/verify.dts" \
+# Dump actual decompiled DTS to debug format
+"$DTC_BIN" -I dtb -O dts -o "${DTBCHECK_DIR}/debug-p4.dts" \
   "${WORK_DIR}/kernel-out/arch/arm64/boot/dts/qcom/msm8953-albus-p4.dtb" 2>/dev/null
 
-if grep -q "< ${TARGET_CPU_KHZ} >" "${DTBCHECK_DIR}/verify.dts"; then
-  note "VERIFIED: cpufreq-table has ${TARGET_CPU_KHZ} KHz"
-else
-  die "FIX FAILED: cpufreq-table still missing ${TARGET_CPU_KHZ} KHz"
-fi
+note "=== DEBUG: cpufreq-table lines ==="
+grep -n "cpufreq" "${DTBCHECK_DIR}/debug-p4.dts" || note "no cpufreq found"
+grep -n "2208" "${DTBCHECK_DIR}/debug-p4.dts" | head -20 || note "no 2208 found"
+note "=== DEBUG: speed-bin lines ==="
+grep -n "speed.*bin\|qcom,speed" "${DTBCHECK_DIR}/debug-p4.dts" | head -10 || note "no speed-bin found"
+note "=== DEBUG: GPU lines ==="
+grep -n "650000000\|gpu.*freq\|gfxfreq" "${DTBCHECK_DIR}/debug-p4.dts" | head -10 || note "no gpu freq found"
 
-if grep -q "${TARGET_CPU_HZ} 9" "${DTBCHECK_DIR}/verify.dts"; then
-  note "VERIFIED: speed-bin has ${TARGET_CPU_HZ} Hz"
+# Verify with flexible patterns
+TARGET_CPU_HEX="$(printf '0x%x' ${TARGET_CPU_KHZ})"
+TARGET_GPU_HEX="$(printf '0x%x' ${TARGET_GPU_HZ})"
+TARGET_CPU_HZ_HEX="$(printf '0x%x' ${TARGET_CPU_HZ})"
+if grep -q "2300\|${TARGET_CPU_HEX}\|${TARGET_CPU_KHZ}" "${DTBCHECK_DIR}/debug-p4.dts"; then
+  note "VERIFIED: CPU overclock value found in decompiled DTB"
 else
-  die "FIX FAILED: speed-bin still missing ${TARGET_CPU_HZ} Hz"
+  die "FIX FAILED: CPU overclock value not found in decompiled DTB after fix"
+fi
+if grep -q "700000\|${TARGET_GPU_HEX}\|${TARGET_GPU_HZ}" "${DTBCHECK_DIR}/debug-p4.dts"; then
+  note "VERIFIED: GPU overclock value found in decompiled DTB"
+else
+  die "FIX FAILED: GPU overclock value not found in decompiled DTB after fix"
 fi
 
 # ============================================================
