@@ -6,6 +6,9 @@ Works on QCDT v2, QCDT v3 Motorola, and standalone FDT/DTB files.
 Does NOT use dtc - performs direct byte replacement of known stock
 frequency values to preserve all Qualcomm-specific properties.
 
+IMPORTANT: DTB property values are stored in big-endian (FDT spec),
+while the QCDT container header is little-endian (Qualcomm format).
+
 Usage:
     python3 overclock_dt.py <input> <output> [--gpu-mhz 700] [--cpu-mhz 2300]
 """
@@ -18,19 +21,18 @@ QCDT_MAGIC = b"QCDT"
 FDT_MAGIC = b"\xd0\x0d\xfe\xed"
 
 # Known stock frequencies for Snapdragon 626 / msm8953
+# qcom,gpu-freq stores Hz as big-endian u32: 650000000 = 0x26BE3680
+# qcom,cpufreq-table stores KHz as big-endian u32: 2208000 = 0x0021B100
 STOCK_GPU_HZ = 650_000_000
 STOCK_CPU_KHZ = 2_208_000
 
-STOCK_GPU_LE = struct.pack("<I", STOCK_GPU_HZ)
-STOCK_CPU_LE = struct.pack("<I", STOCK_CPU_KHZ)
+# BIG-ENDIAN byte patterns (FDT spec)
+STOCK_GPU_BE = struct.pack(">I", STOCK_GPU_HZ)
+STOCK_CPU_BE = struct.pack(">I", STOCK_CPU_KHZ)
 
 
 def read_u32_le(data, offset):
     return struct.unpack("<I", data[offset : offset + 4])[0]
-
-
-def write_u32_le(value):
-    return struct.pack("<I", value & 0xFFFFFFFF)
 
 
 def find_all(data, needle):
@@ -46,27 +48,28 @@ def find_all(data, needle):
 
 
 def patch_binary_freqs(dtb, target_gpu_mhz, target_cpu_mhz):
-    """Patch stock freq values in a DTB blob."""
+    """Patch stock freq values in a DTB blob (big-endian values)."""
     target_gpu_hz = target_gpu_mhz * 1_000_000
     target_cpu_khz = target_cpu_mhz * 1_000
 
-    gpu_le = struct.pack("<I", target_gpu_hz)
-    cpu_le = struct.pack("<I", target_cpu_khz)
+    gpu_be = struct.pack(">I", target_gpu_hz)
+    cpu_be = struct.pack(">I", target_cpu_khz)
 
-    gpu_count = len(find_all(dtb, STOCK_GPU_LE))
-    cpu_count = len(find_all(dtb, STOCK_CPU_LE))
+    gpu_count = 0
+    for pos in find_all(dtb, STOCK_GPU_BE):
+        dtb[pos : pos + 4] = gpu_be
+        gpu_count += 1
 
-    for pos in find_all(dtb, STOCK_GPU_LE):
-        dtb[pos : pos + 4] = gpu_le
-
-    for pos in find_all(dtb, STOCK_CPU_LE):
-        dtb[pos : pos + 4] = cpu_le
+    cpu_count = 0
+    for pos in find_all(dtb, STOCK_CPU_BE):
+        dtb[pos : pos + 4] = cpu_be
+        cpu_count += 1
 
     return gpu_count, cpu_count
 
 
 def process_qcdt_v2(data, target_gpu_mhz, target_cpu_mhz):
-    """Process QCDT v2 image (24-byte entries)."""
+    """Process QCDT v2 image (24-byte entries, LE header)."""
     hdr_version = read_u32_le(data, 4)
     num_entries = read_u32_le(data, 8)
 
@@ -105,7 +108,7 @@ def process_qcdt_v2(data, target_gpu_mhz, target_cpu_mhz):
 
 
 def process_qcdt_v3_moto(data, target_gpu_mhz, target_cpu_mhz):
-    """Process QCDT v3 Motorola image (72-byte entries)."""
+    """Process QCDT v3 Motorola image (72-byte entries, LE header)."""
     hdr_version = read_u32_le(data, 4)
     num_entries = read_u32_le(data, 8)
     mtor_version = (hdr_version >> 8) & 0xFF
@@ -146,30 +149,6 @@ def process_qcdt_v3_moto(data, target_gpu_mhz, target_cpu_mhz):
     return total_gpu, total_cpu
 
 
-def process_raw_dtb(data, target_gpu_mhz, target_cpu_mhz):
-    """Process a raw DTB (FDT blob) or a file with embedded DTBs."""
-    total_gpu = 0
-    total_cpu = 0
-
-    for pos in find_all(data, FDT_MAGIC):
-        # Try to find the end by checking for the next FDT magic or end of file
-        next_pos = data.find(FDT_MAGIC, pos + 4)
-        if next_pos < 0:
-            end = len(data)
-        else:
-            end = next_pos
-
-        chunk = bytearray(data[pos:end])
-        gpu, cpu = patch_binary_freqs(chunk, target_gpu_mhz, target_cpu_mhz)
-        if gpu > 0 or cpu > 0:
-            data[pos:end] = chunk
-            print(f"  FDT at offset {pos}: gpu={gpu} cpu={cpu} [OK]")
-        total_gpu += gpu
-        total_cpu += cpu
-
-    return total_gpu, total_cpu
-
-
 def main():
     parser = argparse.ArgumentParser(description="Binary-patch GPU/CPU freq in DT image")
     parser.add_argument("input", help="Input image (QCDT or DTB)")
@@ -182,6 +161,9 @@ def main():
         data = bytearray(f.read())
 
     print(f"Input: {args.input} ({len(data)} bytes)")
+    print(f"Stock values (big-endian):")
+    print(f"  GPU: 0x{STOCK_GPU_HZ:08x} Hz -> {STOCK_GPU_BE.hex()}")
+    print(f"  CPU: 0x{STOCK_CPU_KHZ:08x} KHz -> {STOCK_CPU_BE.hex()}")
 
     if data[:4] == QCDT_MAGIC:
         hdr_version = read_u32_le(data, 4)
@@ -201,21 +183,21 @@ def main():
     elif data[:4] == FDT_MAGIC:
         print("Format: Standalone FDT/DTB")
         output = bytearray(data)
-        gpu_total, cpu_total = process_raw_dtb(output, args.gpu_mhz, args.cpu_mhz)
+        gpu_total, cpu_total = patch_binary_freqs(output, args.gpu_mhz, args.cpu_mhz)
         output = bytes(output)
     else:
         print("Format: unknown header, scanning for FDT blobs...")
         output = bytearray(data)
-        gpu_total, cpu_total = process_raw_dtb(output, args.gpu_mhz, args.cpu_mhz)
+        gpu_total, cpu_total = patch_binary_freqs(output, args.gpu_mhz, args.cpu_mhz)
         output = bytes(output)
 
     print(f"\nResults: GPU patched={gpu_total}, CPU patched={cpu_total}")
 
     if gpu_total == 0 and cpu_total == 0:
-        print("\nERROR: No stock frequency values were found in the image!")
-        print("  Expected to find:")
-        print(f"    GPU: 0x{STOCK_GPU_HZ:08x} ({STOCK_GPU_HZ} Hz)")
-        print(f"    CPU: 0x{STOCK_CPU_KHZ:08x} ({STOCK_CPU_KHZ} KHz)")
+        print("\nERROR: No stock frequency values were found!")
+        print("  Expected big-endian byte patterns:")
+        print(f"    GPU: {STOCK_GPU_BE.hex()} (0x{STOCK_GPU_HZ:08x} Hz)")
+        print(f"    CPU: {STOCK_CPU_BE.hex()} (0x{STOCK_CPU_KHZ:08x} KHz)")
         sys.exit(1)
 
     with open(args.output, "wb") as f:
