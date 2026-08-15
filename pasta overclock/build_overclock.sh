@@ -136,32 +136,27 @@ clone_commit "$DTBTOOL_REPO" "$DTBTOOL_COMMIT" "${WORK_DIR}/dtbtool"
 note "Patch kernel for GPU ${GPU_MHZ} MHz, CPU ${CPU_MHZ} MHz"
 
 # --- File 1: drivers/clk/msm/clock-cpu-8953.c ---
-# The PLL (apcs_hf_pll) already supports up to 2400MHz.
-# Just raise the max_rate limit.
+# Raise the PLL max_rate to accommodate target CPU freq.
 CPU_CLK_DRV="${WORK_DIR}/kernel/drivers/clk/msm/clock-cpu-8953.c"
 [[ -f "$CPU_CLK_DRV" ]] || die "CPU clock driver not found: $CPU_CLK_DRV"
 grep -q "max_rate = 2208000000UL" "$CPU_CLK_DRV" \
   || die "Stock max_rate 2208000000 not found in $CPU_CLK_DRV"
-sed -i "s/max_rate = 2208000000UL/max_rate = 2400000000UL/" "$CPU_CLK_DRV"
-note "CPU clock max_rate raised to 2400MHz"
+# Set max_rate to target CPU freq + 200MHz headroom
+CPU_PLL_MAX=$((TARGET_CPU_KHZ * 1000 + 200000000))
+sed -i "s/max_rate = 2208000000UL/max_rate = ${CPU_PLL_MAX}UL/" "$CPU_CLK_DRV"
+note "CPU clock max_rate raised to $((CPU_PLL_MAX / 1000000)) MHz"
 
 # --- File 2: drivers/clk/msm/clock-gcc-8953.c ---
-# Add 700MHz entry to GPU clock source table.
-# gpll3 = 1300MHz. 700MHz cannot be derived from gpll3 (1300/700 is not integer).
-# Use gpll0 = 1200MHz. 700MHz not derivable.
-# Use gpll4_out_aux = 1152MHz. 700MHz not derivable.
-# Actually, best approach: use the XO path or just set gpll3 to 1400MHz.
-# gpll3 is programmable. Change 650MHz entry: gpll3 1300->1400, then 1400/2 = 700.
+# Dynamic GPU clock: gpll3 needs to be GPU_MHZ*2 to get target freq.
 GPU_CLK_DRV="${WORK_DIR}/kernel/drivers/clk/msm/clock-gcc-8953.c"
 [[ -f "$GPU_CLK_DRV" ]] || die "GPU clock driver not found: $GPU_CLK_DRV"
 grep -q "650000000" "$GPU_CLK_DRV" \
   || die "Stock GPU 650MHz not found in $GPU_CLK_DRV"
-# Change gpll3 from 1300MHz to 1400MHz and divider from 1 to 2 to get 700MHz
-# Original: F_MM( 650000000,    1300000000,               gpll3,    1,    0,     0),
-sed -i 's/F_MM( 650000000,    1300000000,               gpll3,    1,/F_MM( 700000000,    1400000000,               gpll3,    1,/' "$GPU_CLK_DRV"
-grep -q "700000000" "$GPU_CLK_DRV" \
-  || die "GPU clock patch failed - 700MHz not found in $GPU_CLK_DRV"
-note "GPU clock: 650MHz -> 700MHz (gpll3 1400MHz/1)"
+GPLL3_TARGET=$((TARGET_GPU_HZ * 2))
+sed -i "s/F_MM( 650000000,    1300000000,               gpll3,    1,/F_MM( ${TARGET_GPU_HZ},    ${GPLL3_TARGET},               gpll3,    1,/" "$GPU_CLK_DRV"
+grep -q "${TARGET_GPU_HZ}" "$GPU_CLK_DRV" \
+  || die "GPU clock patch failed - ${TARGET_GPU_HZ} not found in $GPU_CLK_DRV"
+note "GPU clock: 650MHz -> ${GPU_MHZ}MHz (gpll3 ${GPLL3_TARGET}MHz/1)"
 
 # --- File 3: arch/arm/boot/dts/qcom/msm8953.dtsi ---
 # Patch speed-bin tables, cpufreq-table, and gfxfreq-corner
@@ -174,18 +169,18 @@ grep -q "< ${STOCK_CPU_KHZ} >" "$CPU_DTS" \
 sed -i "s/< ${STOCK_CPU_KHZ} >/< ${TARGET_CPU_KHZ} >/g" "$CPU_DTS"
 note "CPU cpufreq-table: ${STOCK_CPU_KHZ} -> ${TARGET_CPU_KHZ} KHz"
 
-# 3b: Patch speed-bin tables (Hz values, REPLACE 2208000000 with 2300000000)
+# 3b: Patch speed-bin tables (Hz values, REPLACE stock with target)
 # Reuse level 9 to avoid needing new clock driver level mappings.
 grep -q "2208000000" "$CPU_DTS" \
   || die "Stock CPU 2208000000 Hz not found in speed-bin tables"
-sed -i 's/2208000000 9/2300000000 9/g' "$CPU_DTS"
-note "CPU speed-bin tables: 2208000000 -> 2300000000 Hz (level 9)"
+sed -i "s/2208000000 9/${TARGET_CPU_HZ} 9/g" "$CPU_DTS"
+note "CPU speed-bin tables: 2208000000 -> ${TARGET_CPU_HZ} Hz (level 9)"
 
-# 3c: Patch gfxfreq-corner (add 700000000)
+# 3c: Patch gfxfreq-corner
 grep -q "650000000" "$CPU_DTS" \
   || die "Stock GPU 650000000 Hz not found in gfxfreq-corner"
-sed -i 's/< 650000000   7 >/< 700000000   7 >/' "$CPU_DTS"
-note "CPU gfxfreq-corner: 650MHz -> 700MHz"
+sed -i "s/< 650000000   7 >/< ${TARGET_GPU_HZ}   7 >/" "$CPU_DTS"
+note "CPU gfxfreq-corner: 650MHz -> ${GPU_MHZ}MHz"
 
 # --- File 4: arch/arm/boot/dts/qcom/msm8953-gpu.dtsi ---
 # Change top GPU power level from 650MHz to 700MHz
