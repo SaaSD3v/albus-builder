@@ -1,0 +1,15 @@
+dist/droidlink-probe-aarch64-alpine/droidlink-probe: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), dynamically linked, interpreter /lib/ld-musl-aarch64.so.1, BuildID[sha1]=ce4978826c7d7529f41203f50c8e9e89e9843756, with debug_info, not stripped
+
+== ldd ==
+	/lib/ld-musl-aarch64.so.1 (0x7f0e2bf30000)
+	libXdamage.so.1 => /usr/lib/libXdamage.so.1 (0x7f0e2af0e000)
+	libXtst.so.6 => /usr/lib/libXtst.so.6 (0x7f0e2aeed000)
+	libXext.so.6 => /usr/lib/libXext.so.6 (0x7f0e2aecc000)
+	libXfixes.so.3 => /usr/lib/libXfixes.so.3 (0x7f0e2aeab000)
+	libX11.so.6 => /usr/lib/libX11.so.6 (0x7f0e2ad77000)
+	libc.musl-aarch64.so.1 => /lib/ld-musl-aarch64.so.1 (0x7f0e2bf30000)
+	libxcb.so.1 => /usr/lib/libxcb.so.1 (0x7f0e2ad36000)
+	libXau.so.6 => /usr/lib/libXau.so.6 (0x7f0e2ad15000)
+	libXdmcp.so.6 => /usr/lib/libXdmcp.so.6 (0x7f0e2acf4000)
+	libbsd.so.0 => /usr/lib/libbsd.so.0 (0x7f0e2acd2000)
+	libmd.so.0 => /usr/lib/libmd.so.0 (0x7f0e2acb1000)
