@@ -2,11 +2,13 @@
 set -eux
 
 apk add --no-cache \
-  build-base pkgconf file pax-utils \
+  build-base pkgconf file pax-utils coreutils \
   libx11-dev libxext-dev libxdamage-dev libxfixes-dev libxtst-dev
 
 OUT=dist/droidlink-probe-aarch64-alpine
-rm -rf "$OUT" dist/droidlink-probe-aarch64-alpine.tar.gz
+rm -rf "$OUT" \
+  dist/droidlink-probe-aarch64-alpine.tar.gz \
+  dist/droidlink-probe-aarch64-alpine.tar.gz.b64
 mkdir -p "$OUT/lib"
 
 cc -O2 -pipe -Wall -Wextra \
@@ -43,6 +45,10 @@ chmod 0755 "$OUT/run-probe.sh"
 sha256sum "$OUT/droidlink-probe" > "$OUT/SHA256SUMS"
 tar -C dist -czf dist/droidlink-probe-aarch64-alpine.tar.gz \
   droidlink-probe-aarch64-alpine
+base64 dist/droidlink-probe-aarch64-alpine.tar.gz \
+  > dist/droidlink-probe-aarch64-alpine.tar.gz.b64
+sha256sum dist/droidlink-probe-aarch64-alpine.tar.gz \
+  >> "$OUT/SHA256SUMS"
 
 file "$OUT/droidlink-probe"
 cat "$OUT/BUILD-INFO.txt"
