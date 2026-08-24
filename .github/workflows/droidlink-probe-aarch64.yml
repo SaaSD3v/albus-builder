@@ -1,0 +1,90 @@
+name: DroidLink Probe aarch64 Alpine
+
+on:
+  push:
+    branches:
+      - droidlink-probe-aarch64
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-aarch64-alpine:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable aarch64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build inside Alpine 3.23 aarch64
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf dist
+          mkdir -p dist
+
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD:/work" -w /work \
+            alpine:3.23 /bin/sh -euxc '
+              apk add --no-cache \
+                build-base pkgconf file pax-utils \
+                libx11-dev libxext-dev libxdamage-dev libxfixes-dev libxtst-dev
+
+              OUT=dist/droidlink-probe-aarch64-alpine
+              mkdir -p "$OUT/lib"
+
+              cc -O2 -pipe -Wall -Wextra \
+                $(pkg-config --cflags x11 xext xdamage xfixes xtst) \
+                droidlink/droidlink-probe.c \
+                -o "$OUT/droidlink-probe" \
+                $(pkg-config --libs x11 xext xdamage xfixes xtst)
+
+              chmod 0755 "$OUT/droidlink-probe"
+              file "$OUT/droidlink-probe" | tee "$OUT/BUILD-INFO.txt"
+              printf "\n== ldd ==\n" >> "$OUT/BUILD-INFO.txt"
+              ldd "$OUT/droidlink-probe" | tee -a "$OUT/BUILD-INFO.txt"
+
+              ldd "$OUT/droidlink-probe" \
+                | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
+                | sort -u \
+                | while IFS= read -r lib; do
+                    [ -f "$lib" ] || continue
+                    case "$lib" in /lib/ld-musl-*) continue ;; esac
+                    cp -L "$lib" "$OUT/lib/"
+                  done
+
+              printf "%s\n" \
+                "#!/bin/sh" \
+                "set -eu" \
+                '\''HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)'\'' \
+                '\''export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'\'' \
+                '\'': "${DISPLAY:=:2}"'\'' \
+                "export DISPLAY" \
+                '\''exec "$HERE/droidlink-probe" "$@"'\'' \
+                > "$OUT/run-probe.sh"
+              chmod 0755 "$OUT/run-probe.sh"
+
+              sha256sum "$OUT/droidlink-probe" > "$OUT/SHA256SUMS"
+              tar -C dist -czf dist/droidlink-probe-aarch64-alpine.tar.gz \
+                droidlink-probe-aarch64-alpine
+            '
+
+          file dist/droidlink-probe-aarch64-alpine/droidlink-probe
+          cat dist/droidlink-probe-aarch64-alpine/BUILD-INFO.txt
+          cat dist/droidlink-probe-aarch64-alpine/SHA256SUMS
+
+      - name: Upload aarch64 Alpine artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: droidlink-probe-aarch64-alpine
+          path: |
+            dist/droidlink-probe-aarch64-alpine/
+            dist/droidlink-probe-aarch64-alpine.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
