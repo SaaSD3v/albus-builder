@@ -49,9 +49,7 @@ jobs:
         env:
           GPU_MHZ: ${{ github.event.inputs.gpu_mhz || '700' }}
           CPU_MHZ: ${{ github.event.inputs.cpu_mhz || '2300' }}
-        run: |
-          chmod +x "pasta overclock/build_overclock.sh"
-          bash "pasta overclock/build_overclock.sh"
+        run: python3 scripts/run-current-kernel-builder.py "pasta overclock/build_overclock.sh"
 
       - name: Upload recovery
         uses: actions/upload-artifact@v4
