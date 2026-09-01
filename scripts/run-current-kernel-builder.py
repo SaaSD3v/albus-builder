@@ -67,17 +67,13 @@ fi
     dest = match.group("dest")
     source_checks = f'''{match.group("line")}
 CURRENT_KERNEL_DIR={dest}
-grep -Fqx 'CONFIG_ANDROID_PARANOID_NETWORK=n' "${{CURRENT_KERNEL_DIR}}/arch/arm64/configs/albus_defconfig" \\
-  || die "current lineage-15.1 source is missing CONFIG_ANDROID_PARANOID_NETWORK=n"
-grep -Fqx '#include <linux/android_aid.h>' "${{CURRENT_KERNEL_DIR}}/security/commoncap.c" \\
-  || die "current lineage-15.1 source is missing the Android AID Wi-Fi fix"
+grep -Fqx 'CONFIG_ANDROID_PARANOID_NETWORK=n' "${{CURRENT_KERNEL_DIR}}/arch/arm64/configs/albus_defconfig" || die "current lineage-15.1 source is missing CONFIG_ANDROID_PARANOID_NETWORK=n"
+grep -Fqx '#include <linux/android_aid.h>' "${{CURRENT_KERNEL_DIR}}/security/commoncap.c" || die "current lineage-15.1 source is missing the Android AID Wi-Fi fix"
 if grep -Fq '#ifdef CONFIG_ANDROID_PARANOID_NETWORK' "${{CURRENT_KERNEL_DIR}}/security/commoncap.c"; then
   die "CONFIG_ANDROID_PARANOID_NETWORK still gates security/commoncap.c"
 fi
-grep -Fq 'AID_NET_RAW' "${{CURRENT_KERNEL_DIR}}/security/commoncap.c" \\
-  || die "AID_NET_RAW capability mapping is missing"
-grep -Fq 'AID_NET_ADMIN' "${{CURRENT_KERNEL_DIR}}/security/commoncap.c" \\
-  || die "AID_NET_ADMIN capability mapping is missing"
+grep -Fq 'AID_NET_RAW' "${{CURRENT_KERNEL_DIR}}/security/commoncap.c" || die "AID_NET_RAW capability mapping is missing"
+grep -Fq 'AID_NET_ADMIN' "${{CURRENT_KERNEL_DIR}}/security/commoncap.c" || die "AID_NET_ADMIN capability mapping is missing"
 '''
     text = clone_re.sub(source_checks.rstrip("\n"), text, count=1)
 
@@ -108,10 +104,8 @@ grep -Fq 'AID_NET_ADMIN' "${{CURRENT_KERNEL_DIR}}/security/commoncap.c" \\
 
     verify = [
         match.group("line"),
-        "grep -Fqx '# CONFIG_KSU is not set' \"$KERNEL_CONFIG\" \\",
-        "  || die \"KernelSU must remain disabled in recovery\"",
-        "grep -Fqx '# CONFIG_ANDROID_PARANOID_NETWORK is not set' \"$KERNEL_CONFIG\" \\",
-        "  || die \"CONFIG_ANDROID_PARANOID_NETWORK must remain disabled\"",
+        "grep -Fqx '# CONFIG_KSU is not set' \"$KERNEL_CONFIG\" || die \"KernelSU must remain disabled in recovery\"",
+        "grep -Fqx '# CONFIG_ANDROID_PARANOID_NETWORK is not set' \"$KERNEL_CONFIG\" || die \"CONFIG_ANDROID_PARANOID_NETWORK must remain disabled\"",
     ]
     if bare:
         verify.extend(
@@ -128,10 +122,7 @@ grep -Fq 'AID_NET_ADMIN' "${{CURRENT_KERNEL_DIR}}/security/commoncap.c" \\
     ignored = "RD_LZMA|DECOMPRESS_LZMA|KSU.*"
     if bare:
         ignored += "|IP_SET.*|NETFILTER_XT_SET|NETFILTER_XT_MATCH_RECENT|NETFILTER_XT_MATCH_OWNER"
-    text = text.replace(
-        "RD_LZMA|DECOMPRESS_LZMA",
-        ignored,
-    )
+    text = text.replace("RD_LZMA|DECOMPRESS_LZMA", ignored)
 
     old_ksu_guard = '''if grep -Eq '^(# )?CONFIG_KSU([_= ]|$)' "$KERNEL_CONFIG"; then
   die "KernelSU configuration symbols unexpectedly exist"
