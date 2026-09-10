@@ -16,8 +16,8 @@ trap cleanup EXIT
   echo "error: base builder not found: $BASE_BUILDER" >&2
   exit 1
 }
-[[ -x "${ROOT_DIR}/scripts/integrate-recovery-console.sh" ]] || {
-  echo "error: recovery-console integration helper is missing or not executable" >&2
+[[ -f "${ROOT_DIR}/scripts/integrate-recovery-console.sh" ]] || {
+  echo "error: recovery-console integration helper is missing" >&2
   exit 1
 }
 
@@ -60,7 +60,7 @@ cp "$DT_IMAGE" "${REPACK_DIR}/extra"
 
 note "Integrate recovery-console into the TWRP ramdisk"
 readonly RECOVERY_CONSOLE_BINARY="${WORK_DIR}/recovery-console-aarch64"
-"${ROOT_DIR}/scripts/integrate-recovery-console.sh" \\
+bash "${ROOT_DIR}/scripts/integrate-recovery-console.sh" \\
   "${REPACK_DIR}/ramdisk.cpio" \\
   "$MAGISKBOOT" \\
   "$MAGISK_APK" \\
