@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-[[ $# -eq 5 ]] || {
-  echo "usage: $0 <ramdisk.cpio> <magiskboot> <Magisk.apk> <work-dir> <output-binary>" >&2
+[[ $# -eq 4 ]] || {
+  echo "usage: $0 <ramdisk.cpio> <magiskboot> <work-dir> <output-binary>" >&2
   exit 2
 }
 
 readonly RAMDISK_CPIO="$1"
 readonly MAGISKBOOT="$2"
-readonly MAGISK_APK="$3"
-readonly WORK_DIR="$4"
-readonly OUTPUT_BINARY="$5"
+readonly WORK_DIR="$3"
+readonly OUTPUT_BINARY="$4"
 
 readonly RECOVERY_CONSOLE_REPO="https://github.com/SaaSD3v/recovery-console.git"
 readonly RECOVERY_CONSOLE_COMMIT="0be3707df843664cbb69323c954c34c1d41ed7c3"
@@ -35,7 +34,6 @@ sha256_of() {
 
 [[ -f "$RAMDISK_CPIO" ]] || die "ramdisk not found: $RAMDISK_CPIO"
 [[ -x "$MAGISKBOOT" ]] || die "magiskboot is not executable: $MAGISKBOOT"
-[[ -f "$MAGISK_APK" ]] || die "Magisk APK not found: $MAGISK_APK"
 
 readonly RC_DIR="${WORK_DIR}/recovery-console-src"
 readonly RC_HOME="${WORK_DIR}/recovery-console-home"
@@ -45,7 +43,6 @@ readonly RC_VERIFY_DIR="${WORK_DIR}/recovery-console-verify"
 readonly RAMDISK_RAW="${WORK_DIR}/ramdisk.recovery-console.raw.cpio"
 readonly RAMDISK_RECOMPRESSED="${WORK_DIR}/ramdisk.recovery-console.lzma"
 readonly RAMDISK_ROUNDTRIP="${WORK_DIR}/ramdisk.recovery-console.roundtrip.cpio"
-readonly MAGISKPOLICY="${WORK_DIR}/magiskpolicy"
 
 note "Clone pinned recovery-console source"
 git init --quiet "$RC_DIR"
@@ -194,21 +191,7 @@ PY
 [[ -s "$RC_PATCH_DIR/.recovery-console-modified-rc" ]] \
   || die "no init rc file was patched"
 
-note "Patch recovery SELinux policy when a ramdisk sepolicy is present"
-POLICY_PATCHED=0
-if [[ -f "$RC_PATCH_DIR/sepolicy" ]]; then
-  unzip -p "$MAGISK_APK" lib/x86_64/libmagiskpolicy.so > "$MAGISKPOLICY"
-  chmod 0755 "$MAGISKPOLICY"
-  [[ -s "$MAGISKPOLICY" ]] || die "magiskpolicy could not be extracted"
-
-  "$MAGISKPOLICY" \
-    --load "$RC_PATCH_DIR/sepolicy" \
-    --save "$RC_PATCH_DIR/sepolicy.patched" \
-    $'allow adbd adbd process setcurrent\nallow adbd su process dyntransition\npermissive { adbd }\npermissive { su }\npermissive { recovery }'
-  [[ -s "$RC_PATCH_DIR/sepolicy.patched" ]] || die "magiskpolicy did not produce a patched policy"
-  mv "$RC_PATCH_DIR/sepolicy.patched" "$RC_PATCH_DIR/sepolicy"
-  POLICY_PATCHED=1
-fi
+note "Keep stock sepolicy unchanged; pinned TWRP base is validated as SELinux permissive"
 
 note "Inject recovery-console and the patched init configuration into raw ramdisk CPIO"
 CPIO_COMMANDS=()
@@ -233,12 +216,6 @@ while IFS= read -r rel; do
   CPIO_COMMANDS+=("rm $rel")
   CPIO_COMMANDS+=("add 0${mode} $rel $RC_PATCH_DIR/$rel")
 done < "$RC_PATCH_DIR/.recovery-console-modified-rc"
-
-if [[ "$POLICY_PATCHED" -eq 1 ]]; then
-  mode="$(stat -c '%a' "$RC_PATCH_DIR/sepolicy")"
-  CPIO_COMMANDS+=("rm sepolicy")
-  CPIO_COMMANDS+=("add 0${mode} sepolicy $RC_PATCH_DIR/sepolicy")
-fi
 
 "$MAGISKBOOT" cpio "$RAMDISK_RAW" "${CPIO_COMMANDS[@]}"
 
@@ -299,4 +276,4 @@ mv "$RAMDISK_RECOMPRESSED" "$RAMDISK_CPIO"
 printf 'recovery-console commit: %s\n' "$RECOVERY_CONSOLE_COMMIT"
 printf 'recovery-console sha256: %s\n' "$(sha256_of "$OUTPUT_BINARY")"
 printf 'ramdisk compression: lzma (preserved)\n'
-printf 'SELinux recovery policy patched: %s\n' "$POLICY_PATCHED"
+printf 'sepolicy: unchanged (pinned TWRP cmdline is permissive)\n'
