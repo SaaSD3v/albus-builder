@@ -1,22 +1,22 @@
-name: Build recovery
+name: Build Albus recovery + Recovery Console
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - recovery-console-clean
 
 permissions:
   contents: read
 
 concurrency:
-  group: recovery-${{ github.ref }}
+  group: recovery-console-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -27,9 +27,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes \
             bc \
+            binutils \
             bison \
             build-essential \
             curl \
+            file \
             flex \
             git \
             libelf-dev \
@@ -37,12 +39,14 @@ jobs:
             lzma \
             python-is-python3 \
             unzip \
+            xxd \
             xz-utils
 
-      - name: Build kernel and recovery
-        run: python3 scripts/run-current-kernel-builder.py scripts/build.sh
+      - name: Build recovery with Recovery Console
+        run: bash scripts/build-recovery-console.sh
 
       - name: Upload to GoFile
+        if: ${{ secrets.GOFILE_TOKEN != '' }}
         run: |
           SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
           RESPONSE=$(curl -s -X POST "https://${SERVER}.gofile.io/contents/uploadfile" \
@@ -50,11 +54,11 @@ jobs:
             -F "file=@artifacts/recovery.img")
           echo "$RESPONSE" | jq .
           DOWNLOAD_PAGE=$(echo "$RESPONSE" | jq -r '.data.downloadPage')
-          echo "GoFile link: $DOWNLOAD_PAGE" >> $GITHUB_STEP_SUMMARY
+          echo "GoFile link: $DOWNLOAD_PAGE" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload recovery
+      - name: Upload recovery artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: recovery
+          name: albus-recovery-console
           path: artifacts/*
           if-no-files-found: error
