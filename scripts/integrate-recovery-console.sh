@@ -42,6 +42,9 @@ readonly RC_HOME="${WORK_DIR}/recovery-console-home"
 readonly RC_TOOLCHAIN_ARCHIVE="${WORK_DIR}/${MUSL_ARCHIVE}"
 readonly RC_PATCH_DIR="${WORK_DIR}/recovery-console-ramdisk"
 readonly RC_VERIFY_DIR="${WORK_DIR}/recovery-console-verify"
+readonly RAMDISK_RAW="${WORK_DIR}/ramdisk.recovery-console.raw.cpio"
+readonly RAMDISK_RECOMPRESSED="${WORK_DIR}/ramdisk.recovery-console.lzma"
+readonly RAMDISK_ROUNDTRIP="${WORK_DIR}/ramdisk.recovery-console.roundtrip.cpio"
 readonly MAGISKPOLICY="${WORK_DIR}/magiskpolicy"
 
 note "Clone pinned recovery-console source"
@@ -118,12 +121,17 @@ if readelf -l "$BUILT_BINARY" | grep -q 'Requesting program interpreter'; then
 fi
 install -m 0755 "$BUILT_BINARY" "$OUTPUT_BINARY"
 
+note "Decompress the preserved LZMA TWRP ramdisk before CPIO patching"
+rm -f "$RAMDISK_RAW" "$RAMDISK_RECOMPRESSED" "$RAMDISK_ROUNDTRIP"
+"$MAGISKBOOT" decompress "$RAMDISK_CPIO" "$RAMDISK_RAW"
+[[ -s "$RAMDISK_RAW" ]] || die "magiskboot did not decompress the TWRP ramdisk"
+
 note "Extract the TWRP ramdisk for deterministic init.rc patching"
 rm -rf "$RC_PATCH_DIR" "$RC_VERIFY_DIR"
 mkdir -p "$RC_PATCH_DIR" "$RC_VERIFY_DIR"
 (
   cd "$RC_PATCH_DIR"
-  "$MAGISKBOOT" cpio "$RAMDISK_CPIO" "extract"
+  "$MAGISKBOOT" cpio "$RAMDISK_RAW" "extract"
 )
 
 python3 - "$RC_PATCH_DIR" <<'PY'
@@ -202,7 +210,7 @@ if [[ -f "$RC_PATCH_DIR/sepolicy" ]]; then
   POLICY_PATCHED=1
 fi
 
-note "Inject recovery-console and the patched init configuration into ramdisk.cpio"
+note "Inject recovery-console and the patched init configuration into raw ramdisk CPIO"
 CPIO_COMMANDS=()
 if [[ ! -e "$RC_PATCH_DIR/system" ]]; then
   CPIO_COMMANDS+=("mkdir 0755 system")
@@ -232,12 +240,12 @@ if [[ "$POLICY_PATCHED" -eq 1 ]]; then
   CPIO_COMMANDS+=("add 0${mode} sepolicy $RC_PATCH_DIR/sepolicy")
 fi
 
-"$MAGISKBOOT" cpio "$RAMDISK_CPIO" "${CPIO_COMMANDS[@]}"
+"$MAGISKBOOT" cpio "$RAMDISK_RAW" "${CPIO_COMMANDS[@]}"
 
-note "Verify the modified ramdisk contents"
+note "Verify the modified raw ramdisk contents"
 (
   cd "$RC_VERIFY_DIR"
-  "$MAGISKBOOT" cpio "$RAMDISK_CPIO" "extract"
+  "$MAGISKBOOT" cpio "$RAMDISK_RAW" "extract"
 )
 [[ -x "$RC_VERIFY_DIR/system/bin/recovery-console" ]] \
   || die "recovery-console is missing or not executable in the final ramdisk"
@@ -280,6 +288,15 @@ if not found:
     raise SystemExit('stock recovery service disappeared during verification')
 PY
 
+note "Recompress the patched ramdisk to the original LZMA format"
+"$MAGISKBOOT" compress=lzma "$RAMDISK_RAW" "$RAMDISK_RECOMPRESSED"
+[[ -s "$RAMDISK_RECOMPRESSED" ]] || die "magiskboot did not recompress the patched ramdisk"
+"$MAGISKBOOT" decompress "$RAMDISK_RECOMPRESSED" "$RAMDISK_ROUNDTRIP"
+cmp -s "$RAMDISK_RAW" "$RAMDISK_ROUNDTRIP" \
+  || die "LZMA ramdisk recompression failed round-trip verification"
+mv "$RAMDISK_RECOMPRESSED" "$RAMDISK_CPIO"
+
 printf 'recovery-console commit: %s\n' "$RECOVERY_CONSOLE_COMMIT"
 printf 'recovery-console sha256: %s\n' "$(sha256_of "$OUTPUT_BINARY")"
+printf 'ramdisk compression: lzma (preserved)\n'
 printf 'SELinux recovery policy patched: %s\n' "$POLICY_PATCHED"
