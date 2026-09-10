@@ -58,12 +58,15 @@ note "Repack recovery.img with the new kernel and matching DT"
     '''cp "$KERNEL_IMAGE" "${REPACK_DIR}/kernel"
 cp "$DT_IMAGE" "${REPACK_DIR}/extra"
 
+note "Validate SELinux mode of the pinned TWRP base"
+grep -aFq 'androidboot.selinux=permissive' "$BASE_IMAGE" \\
+  || die "pinned TWRP base is not explicitly SELinux permissive"
+
 note "Integrate recovery-console into the TWRP ramdisk"
 readonly RECOVERY_CONSOLE_BINARY="${WORK_DIR}/recovery-console-aarch64"
 bash "${ROOT_DIR}/scripts/integrate-recovery-console.sh" \\
   "${REPACK_DIR}/ramdisk.cpio" \\
   "$MAGISKBOOT" \\
-  "$MAGISK_APK" \\
   "$WORK_DIR" \\
   "$RECOVERY_CONSOLE_BINARY"
 [[ -x "$RECOVERY_CONSOLE_BINARY" ]] || die "recovery-console binary was not produced"
@@ -107,6 +110,7 @@ replace_once(
     "  printf 'recovery_console_sha256=%s\\n' \"$RECOVERY_CONSOLE_SHA256\"\n"
     "  printf 'recovery_console_path=/system/bin/recovery-console\\n'\n"
     "  printf 'recovery_console_boot=init-service\\n'\n"
+    "  printf 'recovery_console_selinux=base-cmdline-permissive\\n'\n"
     "  printf 'overclock=disabled\\n'\n",
     'build-info recovery-console anchor',
 )
