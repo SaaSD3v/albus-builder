@@ -28,11 +28,10 @@ for old, new in replacements.items():
     text = text.replace(old, new, 1)
 
 # The upstream Albus device tree is LineageOS 18.1. Its kernel build path uses
-# Clang for C while keeping the GNU cross toolchains/binutils. Only keep the
-# source compatibility patch that is independent of the LLVM integrated
-# assembler experiments.
+# Clang for C while keeping the GNU cross toolchains/binutils. Keep only source
+# compatibility fixes that are independent of the old LLVM-IAS experiments.
 check_anchor = '[[ -f "${ROOT_DIR}/patches/4.9/0002-android-preserve-network-AID-capabilities.patch" ]] || { echo "error: Android network AID patch is missing" >&2; exit 1; }'
-check_extra = check_anchor + '\n[[ -f "${ROOT_DIR}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch" ]] || { echo "error: NQ-NCI 4.9 compile fix is missing" >&2; exit 1; }'
+check_extra = check_anchor + '\n[[ -f "${ROOT_DIR}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch" ]] || { echo "error: NQ-NCI 4.9 compile fix is missing" >&2; exit 1; }\n[[ -f "${ROOT_DIR}/patches/4.9/0004-power-supply-fix-smbchg-null-return.patch" ]] || { echo "error: SMB charger Clang 11 compile fix is missing" >&2; exit 1; }'
 if text.count(check_anchor) != 1:
     raise SystemExit('failed to find 0002 patch presence check')
 text = text.replace(check_anchor, check_extra, 1)
@@ -40,7 +39,7 @@ text = text.replace(check_anchor, check_extra, 1)
 # These strings live inside an f-string in build-recovery-console.sh, so the
 # source form intentionally contains doubled braces around ROOT_DIR.
 apply_anchor = 'git -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0002-android-preserve-network-AID-capabilities.patch"'
-apply_extra = apply_anchor + '\ngit -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"\ngit -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"'
+apply_extra = apply_anchor + '\ngit -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"\ngit -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"\ngit -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0004-power-supply-fix-smbchg-null-return.patch"\ngit -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0004-power-supply-fix-smbchg-null-return.patch"'
 if text.count(apply_anchor) != 1:
     raise SystemExit('failed to find 0002 patch apply anchor')
 text = text.replace(apply_anchor, apply_extra, 1)
