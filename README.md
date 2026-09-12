@@ -1,82 +1,65 @@
-# Albus Recovery + Recovery Console
+# Albus Recovery Console + DroidSpaces Linux 4.9
 
-Branch dedicada: `recovery-console-clean`
+Branch dedicada: `recovery-console-droidspaces-4.9`
 
-Esta branch mantém a receita normal do recovery que já funcionava no Moto Z2 Play (`albus`) e acrescenta somente o `recovery-console` ao ramdisk do TWRP. Nenhum patch de overclock é usado nesta branch.
+Esta branch nasce diretamente de `recovery-console-clean` e mantém o mesmo TWRP 3.5.0_9-0, o mesmo Recovery Console e o mesmo mecanismo de unpack/repack. A diferença é somente o lado do kernel: a receita troca o Linux 3.18 pela árvore limpa Linux 4.9 do Albus e aplica o suporte DroidSpaces apropriado para 4.9.
 
-## Base preservada
+## Base
 
 | Item | Fonte / configuração |
 |---|---|
-| Kernel | `SaaSD3v/android_kernel_motorola_msm8996` |
-| Kernel tree | lineage-15.1 atual usada pelo wrapper |
-| Kernel commit padrão | `9a7416218ae637c4120c417b31428bb0747fdfdf` |
-| Kernel | 3.18.71 |
-| ARM64 kernel toolchain | GCC 4.9 AOSP `android-8.1.0_r52` |
+| Base da branch | `recovery-console-clean` |
+| Kernel | `marcost2/kernel_motorola_msm8593_4.9` |
+| Kernel branch de origem | `lineage-18.1` |
+| Kernel commit | `a9572cf3d93be15565ba24c163e3333971927f70` |
+| Kernel tree | `343f9d8d670495b28fd8f949cd66e982fea4ff58` |
+| Kernel | Linux 4.9 |
+| KernelSU | ausente da árvore original |
+| Overclock | desativado / não usado |
 | Recovery base | `twrp-3.5.0_9-0-albus.img` |
-| Recovery Console | `SaaSD3v/recovery-console` |
-| Recovery Console commit | `0be3707df843664cbb69323c954c34c1d41ed7c3` |
-| Recovery Console toolchain | AArch64 musl from Droidspaces compiler release, SHA-256 pinned |
+| Recovery Console | `SaaSD3v/recovery-console@0be3707df843664cbb69323c954c34c1d41ed7c3` |
 | Final image | `artifacts/recovery.img` |
 
-O kernel continua usando a mesma lógica do builder normal: `CONFIG_ANDROID_PARANOID_NETWORK=n`, fix de capabilities de Wi-Fi em `security/commoncap.c`, KernelSU desativado somente no `.config` temporário do recovery e todas as validações já existentes no builder normal.
+## Suporte DroidSpaces
 
-## O que esta branch acrescenta
+O source 4.9 é clonado no commit original acima e recebe somente dois patches de compatibilidade antes da compilação:
 
-O `recovery-console` é tratado como componente de userspace do recovery, não como parte do kernel.
+1. `cgroup: restore prefixed aliases for DroidSpaces/LXC`
+   - autoria preservada: `ravindu644 <droidcasts@protonmail.com>`;
+   - mantém o arquivo cgroup Android sem prefixo e cria também o alias `controller.file`, necessário para runtimes LXC/DroidSpaces em mounts `noprefix`.
+2. `android: preserve network AID capabilities with paranoid net off`
+   - mantém `AID_NET_RAW` e `AID_NET_ADMIN` funcionais mesmo com `CONFIG_ANDROID_PARANOID_NETWORK=n`, evitando regressão de Wi-Fi/network services do Android antigo.
 
-A build:
+As flags são aplicadas na `.config` de build por `scripts/config` e depois normalizadas por `olddefconfig`; o `albus_defconfig` upstream não é editado no repositório de origem.
 
-1. Executa a mesma receita de kernel/TWRP usada por `scripts/build.sh` através de `scripts/run-current-kernel-builder.py`.
-2. Clona o `recovery-console` em um commit fixo.
-3. Aplica um perfil específico para o Moto Z2 Play/TWRP durante a build, sem alterar o repositório original do console:
-   - shell padrão: `/sbin/sh`;
-   - backlight: `/sys/class/leds/lcd-backlight/brightness`;
-   - rotação: `0`;
-   - margens: `10 px`;
-   - `COLOR_BGR=0`;
-   - shadow buffer desativado para o painel AMOLED;
-   - CRTC blank desativado.
-4. Compila `recovery-console-aarch64` estaticamente com musl.
-5. Descompacta o ramdisk do TWRP.
-6. Localiza o serviço Android init chamado `recovery` e adiciona `disabled` conforme a documentação do Recovery Console.
-7. Instala o binário em `/system/bin/recovery-console`.
-8. Adiciona o serviço:
+Entre as opções exigidas estão namespaces, device/pids/memory cgroups, veth/macvlan/ipvlan/vxlan, bridge, netfilter/iptables/NAT, ipset, nftables, overlayfs, devpts, checkpoint/restore e BPF/cgroup networking. `CONFIG_ANDROID_PARANOID_NETWORK` é explicitamente desabilitado.
 
-```rc
-service recovery-console /system/bin/recovery-console
-    user root
-    group root
-    oneshot
-    disabled
-    seclabel u:r:recovery:s0
+## DT correto do Linux 4.9
 
-on boot
-    start recovery-console
-```
+A build compila `Image.gz` e os DTBs do próprio kernel 4.9. Em seguida usa o `dtbTool_custom --force-v3 --motorola 1` para montar um `dt.img` QCDT v3 a partir de `arch/arm64/boot/dts/qcom/`.
 
-9. Se o ramdisk possuir `sepolicy`, aplica com `magiskpolicy` as permissões recomendadas pela documentação para `recovery`, `adbd` e `su`.
-10. Repacota o TWRP com o mesmo kernel/DT da receita normal e com o novo ramdisk.
-11. Descompacta novamente o `recovery.img` final e valida que:
-    - o kernel é o compilado;
-    - o DT é o compilado;
-    - o ramdisk modificado não mudou durante o repack;
-    - `/system/bin/recovery-console` existe e é executável;
-    - o serviço `recovery-console` existe;
-    - o serviço stock `recovery` está desativado;
-    - o tamanho final cabe na partição recovery do Albus.
-
-## Organização
+O recovery final portanto contém:
 
 ```text
-scripts/
-├── build.sh                         # receita normal preservada
-├── run-current-kernel-builder.py   # aplica a tree atual do kernel
-├── build-recovery-console.sh       # orquestra a variante desta branch
-└── integrate-recovery-console.sh   # compila e injeta somente o console
+TWRP 3.5.0_9-0 original
+├── ramdisk TWRP + Recovery Console
+├── Image.gz Linux 4.9
+└── dt.img Albus Linux 4.9 (Motorola QCDT v3)
 ```
 
-A receita do Recovery Console é gerada temporariamente em tempo de build a partir de `build.sh`. Assim, a lógica de kernel/TWRP continua tendo uma única fonte e esta branch adiciona apenas a etapa de userspace necessária.
+Isso evita misturar o kernel 4.9 com o DT antigo do Linux 3.18.
+
+## Recovery Console
+
+A integração do Recovery Console continua sendo a mesma de `recovery-console-clean`:
+
+- binário AArch64 estático;
+- `/system/bin/recovery-console` dentro do ramdisk;
+- serviço stock `recovery` desabilitado;
+- `recovery-console` iniciado no boot;
+- perfil do Albus/TWRP preservado;
+- ramdisk LZMA preservado;
+- base TWRP permissiva validada antes do repack.
 
 ## Build
 
@@ -84,7 +67,7 @@ A receita do Recovery Console é gerada temporariamente em tempo de build a part
 bash scripts/build-recovery-console.sh
 ```
 
-Ou use o workflow **Build Albus recovery + Recovery Console** no GitHub Actions.
+Ou execute o workflow **Build Albus Recovery Console + DroidSpaces 4.9**.
 
 ## Artefatos
 
@@ -99,18 +82,8 @@ artifacts/
 └── SHA256SUMS
 ```
 
-`build-info.txt` também registra o commit e o SHA-256 do Recovery Console e marca explicitamente `overclock=disabled`.
+`build-info.txt` registra a árvore 4.9 exata, o estado do DroidSpaces, o Recovery Console, o SHA do DT/kernel e confirma `overclock=disabled`.
 
-## Overclock
+## O que não é herdado
 
-Esta branch não usa CPU OC, GPU OC, patch de clock, patch de KGSL, patch de cpufreq nem alteração de frequência em DTS/DTB. O objetivo dela é exclusivamente:
-
-```text
-TWRP original
-    +
-kernel normal com suporte necessário ao ambiente
-    +
-Recovery Console no ramdisk
-    =
-recovery.img
-```
+Esta branch não usa a antiga branch experimental 4.9 como base e não carrega código de overclock, KernelSU ou alterações antigas do Linux 3.18. Os patches antigos são usados apenas como referência de comportamento/proveniência; o build parte da árvore upstream 4.9 original fixada acima.
