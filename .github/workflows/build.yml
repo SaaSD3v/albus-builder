@@ -1,16 +1,21 @@
-name: Build Albus recovery + Recovery Console
+name: Build Albus Recovery Console + DroidSpaces 4.9
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - recovery-console-clean
+      - recovery-console-droidspaces-4.9
+    paths:
+      - '.github/workflows/build.yml'
+      - 'scripts/**'
+      - 'patches/4.9/**'
+      - 'README.md'
 
 permissions:
   contents: read
 
 concurrency:
-  group: recovery-console-${{ github.ref }}
+  group: recovery-console-droidspaces-49-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -34,6 +39,7 @@ jobs:
             file \
             flex \
             git \
+            jq \
             libelf-dev \
             libssl-dev \
             lzma \
@@ -42,7 +48,7 @@ jobs:
             xxd \
             xz-utils
 
-      - name: Build recovery with Recovery Console
+      - name: Build recovery with Recovery Console and DroidSpaces 4.9
         run: |
           set -o pipefail
           bash scripts/build-recovery-console.sh 2>&1 | tee build.log
@@ -51,7 +57,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: recovery-console-build-log
+          name: recovery-console-droidspaces-4.9-build-log
           path: build.log
           if-no-files-found: warn
 
@@ -74,6 +80,6 @@ jobs:
       - name: Upload recovery artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: albus-recovery-console
+          name: albus-recovery-console-droidspaces-4.9
           path: artifacts/*
           if-no-files-found: error
