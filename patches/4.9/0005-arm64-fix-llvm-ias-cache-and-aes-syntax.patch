@@ -1,10 +1,11 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: SaaSD3v <hearesaas@gmail.com>
 Date: Fri, 11 Sep 2026 23:59:00 -0300
-Subject: [PATCH] arm64: fix cache and AES syntax for LLVM integrated assembler
+Subject: [PATCH] arm64: fix cache macro syntax for LLVM integrated assembler
 
-Port two syntax-only ARM64 fixes used by later MSM8953 kernels so the
-Albus 4.9 tree can be assembled by LLVM IAS.
+Use textual macro comparisons for the ARM64 cache operation name instead
+of treating cvau/cvac as absolute assembler expressions. This is the
+syntax used by later MSM8953 ARM64 kernels and preserves behavior.
 
 diff --git a/arch/arm64/include/asm/assembler.h b/arch/arm64/include/asm/assembler.h
 --- a/arch/arm64/include/asm/assembler.h
@@ -43,9 +44,3 @@ diff --git a/arch/arm64/include/asm/assembler.h b/arch/arm64/include/asm/assembl
  	.endif
  	add	\kaddr, \kaddr, \tmp1
  	cmp	\kaddr, \size
-diff --git a/arch/arm64/crypto/aes-ce-cipher-core.c b/arch/arm64/crypto/aes-ce-cipher-core.c
---- a/arch/arm64/crypto/aes-ce-cipher-core.c
-+++ b/arch/arm64/crypto/aes-ce-cipher-core.c
-@@ -134 +134 @@
--		"umov	%w[out], v0.4s[0]	;"
-+		"umov	%w[out], v0.s[0]	;"
