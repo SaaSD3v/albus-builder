@@ -14,14 +14,14 @@ Albus 4.9 tree can be assembled by LLVM IAS:
 Neither change alters the intended cache-maintenance or AES behavior.
 ---
  arch/arm64/crypto/aes-ce-cipher-core.c |  2 +-
- arch/arm64/include/asm/assembler.h      | 16 ++++++++++------
- 2 files changed, 11 insertions(+), 7 deletions(-)
+ arch/arm64/include/asm/assembler.h      | 22 ++++++++++++++--------
+ 2 files changed, 15 insertions(+), 9 deletions(-)
 
 diff --git a/arch/arm64/include/asm/assembler.h b/arch/arm64/include/asm/assembler.h
 index 8351201633f2..f1a200000000 100644
 --- a/arch/arm64/include/asm/assembler.h
 +++ b/arch/arm64/include/asm/assembler.h
-@@ -383,17 +383,21 @@ alternative_endif
+@@ -383,21 +383,28 @@ alternative_endif
   * \tCorrupts:\tkaddr, size, tmp1, tmp2
   */
 +	.macro __dcache_op_workaround_clean_cache, op, kaddr
@@ -56,6 +56,18 @@ index 8351201633f2..f1a200000000 100644
  	add	\kaddr, \kaddr, \tmp1
  	cmp	\kaddr, \size
  	b.lo	9998b
++	dsb	\domain
++	.endm
++
++/*
++ * reset_pmuserenr_el0 - reset PMUSERENR_EL0 if PMUv3 present
++ */
+-	dsb	\domain
+-	.endm
+-
+-/*
+- * reset_pmuserenr_el0 - reset PMUSERENR_EL0 if PMUv3 present
+- */
 diff --git a/arch/arm64/crypto/aes-ce-cipher-core.c b/arch/arm64/crypto/aes-ce-cipher-core.c
 index 9f4191774b35..a10000000000 100644
 --- a/arch/arm64/crypto/aes-ce-cipher-core.c
