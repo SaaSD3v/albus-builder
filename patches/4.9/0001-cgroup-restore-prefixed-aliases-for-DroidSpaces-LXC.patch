@@ -1,0 +1,36 @@
+From: ravindu644 <droidcasts@protonmail.com>
+Subject: [PATCH] cgroup: restore prefixed aliases for DroidSpaces/LXC
+
+Adapt the DroidSpaces non-GKI noprefix compatibility fix to Android Linux 4.9.
+Android may expose legacy cgroup files without the controller prefix; container
+runtimes also probe controller.file names. Keep the original unprefixed node
+and add a prefixed link.
+
+Signed-off-by: ravindu644 <droidcasts@protonmail.com>
+---
+ kernel/cgroup.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/kernel/cgroup.c b/kernel/cgroup.c
+--- a/kernel/cgroup.c
++++ b/kernel/cgroup.c
+@@ -3788,6 +3788,20 @@ static int cgroup_add_file(struct cgroup_subsys_state *css, struct cgroup *cgrp,
+ 		spin_unlock_irq(&cgroup_file_kn_lock);
+ 	}
+ 
++	/*
++	 * DroidSpaces/LXC compatibility for Android noprefix cgroup mounts.
++	 * Preserve the unprefixed node and also expose subsystem.file.
++	 */
++	if (cft->ss && (cgrp->root->flags & CGRP_ROOT_NOPREFIX) &&
++	    !(cft->flags & CFTYPE_NO_PREFIX)) {
++		const char *ss_name = cgroup_on_dfl(cgrp) ?
++			cft->ss->name : cft->ss->legacy_name;
++
++		snprintf(name, CGROUP_FILE_NAME_MAX, "%s.%s",
++			 ss_name, cft->name);
++		kernfs_create_link(cgrp->kn, name, kn);
++	}
++
+ 	return 0;
+ }
