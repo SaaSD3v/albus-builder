@@ -1,0 +1,38 @@
+From 3eed5420cfa87c1650b71a57fe43bce29434bf14 Mon Sep 17 00:00:00 2001
+From: SaaSD3v <hearesaas@gmail.com>
+Date: Fri, 11 Sep 2026 23:58:03 +0000
+Subject: [PATCH] nfc: nq-nci: pass device context to hardware check
+
+Integration/build fix found while validating the attributed Albus 4.9
+DroidSpaces branch with Android GCC 4.9.
+
+Original fix commit:
+3eed5420cfa87c1650b71a57fe43bce29434bf14
+---
+ drivers/nfc/nq-nci.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/nfc/nq-nci.c b/drivers/nfc/nq-nci.c
+--- a/drivers/nfc/nq-nci.c
++++ b/drivers/nfc/nq-nci.c
+@@ -583,7 +583,8 @@ static const struct file_operations nfc_dev_fops = {
+ };
+ 
+ /* Check for availability of NQ_ NFC controller hardware */
+-static int nfcc_hw_check(struct i2c_client *client, unsigned int enable_gpio)
++static int nfcc_hw_check(struct i2c_client *client, unsigned int enable_gpio,
++		struct nqx_dev *nqx_dev)
+ {
+ 	int ret = 0;
+ 
+@@ -963,7 +964,7 @@ static int nqx_probe(struct i2c_client *client,
+ 	 * present before attempting further hardware initialisation.
+ 	 *
+ 	 */
+-	r = nfcc_hw_check(client , platform_data->en_gpio);
++	r = nfcc_hw_check(client, platform_data->en_gpio, nqx_dev);
+ 	if (r) {
+ 		/* make sure NFCC is not enabled */
+ 		gpio_set_value(platform_data->en_gpio, 0);
+-- 
+2.55.0
