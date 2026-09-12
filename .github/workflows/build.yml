@@ -35,6 +35,7 @@ jobs:
             binutils \
             bison \
             build-essential \
+            clang-14 \
             curl \
             file \
             flex \
