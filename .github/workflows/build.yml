@@ -43,6 +43,8 @@ jobs:
             jq \
             libelf-dev \
             libssl-dev \
+            lld-14 \
+            llvm-14 \
             lzma \
             python-is-python3 \
             unzip \
