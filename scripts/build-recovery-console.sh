@@ -4,11 +4,14 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly ROOT_DIR
 readonly BASE_BUILDER="${ROOT_DIR}/scripts/build.sh"
-readonly GENERATED_BUILDER="${ROOT_DIR}/scripts/.build-recovery-console.generated.sh"
+readonly GENERATED_BUILDER="${ROOT_DIR}/scripts/.build-recovery-console-4.9-droidspaces.generated.sh"
 readonly RECOVERY_CONSOLE_COMMIT="0be3707df843664cbb69323c954c34c1d41ed7c3"
+readonly KERNEL_REPO_49="https://github.com/marcost2/kernel_motorola_msm8593_4.9.git"
+readonly KERNEL_COMMIT_49="a9572cf3d93be15565ba24c163e3333971927f70"
+readonly KERNEL_TREE_49="343f9d8d670495b28fd8f949cd66e982fea4ff58"
 
 cleanup() {
-  rm -f "$GENERATED_BUILDER" "${ROOT_DIR}/scripts/.build-recovery-console.generated.sh.current-tree.tmp"
+  rm -f "$GENERATED_BUILDER"
 }
 trap cleanup EXIT
 
@@ -20,14 +23,32 @@ trap cleanup EXIT
   echo "error: recovery-console integration helper is missing" >&2
   exit 1
 }
+[[ -f "${ROOT_DIR}/patches/4.9/0001-cgroup-restore-prefixed-aliases-for-DroidSpaces-LXC.patch" ]] || {
+  echo "error: DroidSpaces cgroup patch is missing" >&2
+  exit 1
+}
+[[ -f "${ROOT_DIR}/patches/4.9/0002-android-preserve-network-AID-capabilities.patch" ]] || {
+  echo "error: Android network AID patch is missing" >&2
+  exit 1
+}
 
-python3 - "$BASE_BUILDER" "$GENERATED_BUILDER" "$RECOVERY_CONSOLE_COMMIT" <<'PY'
+python3 - \
+  "$BASE_BUILDER" \
+  "$GENERATED_BUILDER" \
+  "$RECOVERY_CONSOLE_COMMIT" \
+  "$KERNEL_REPO_49" \
+  "$KERNEL_COMMIT_49" \
+  "$KERNEL_TREE_49" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 source = Path(sys.argv[1])
 out = Path(sys.argv[2])
 console_commit = sys.argv[3]
+kernel_repo = sys.argv[4]
+kernel_commit = sys.argv[5]
+kernel_tree = sys.argv[6]
 text = source.read_text()
 
 
@@ -37,6 +58,27 @@ def replace_once(old: str, new: str, label: str) -> None:
     if count != 1:
         raise SystemExit(f"{source}: expected exactly one {label}, found {count}")
     text = text.replace(old, new, 1)
+
+
+def sub_once(pattern: str, replacement: str, label: str, flags: int = 0) -> None:
+    global text
+    text, count = re.subn(pattern, replacement, text, count=1, flags=flags)
+    if count != 1:
+        raise SystemExit(f"{source}: expected exactly one {label}, found {count}")
+
+# Switch only the kernel side of the known-good recovery recipe to the pristine
+# marcost2 Albus 4.9 tree. TWRP, repack geometry and recovery-console remain
+# inherited from recovery-console-clean.
+sub_once(
+    r'readonly KERNEL_REPO="[^"]+"',
+    f'readonly KERNEL_REPO="{kernel_repo}"',
+    'KERNEL_REPO',
+)
+sub_once(
+    r'readonly KERNEL_COMMIT="[0-9a-f]{40}"',
+    f'readonly KERNEL_COMMIT="{kernel_commit}"',
+    'KERNEL_COMMIT',
+)
 
 replace_once(
     '''  "$ARTIFACT_DIR/recovery.img" \\
@@ -49,6 +91,176 @@ replace_once(
     'artifact cleanup anchor',
 )
 
+# Apply only the two source-level DroidSpaces compatibility patches. The first
+# retains the original ravindu644 authorship in the bundled patch header.
+clone_line = 'clone_commit "$KERNEL_REPO" "$KERNEL_COMMIT" "$KERNEL_DIR"'
+replace_once(
+    clone_line,
+    clone_line + f'''
+[[ "$(git -C "$KERNEL_DIR" rev-parse HEAD^{{tree}})" == "{kernel_tree}" ]] \\
+  || die "unexpected pristine Albus 4.9 source tree"
+
+git -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0001-cgroup-restore-prefixed-aliases-for-DroidSpaces-LXC.patch"
+git -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0001-cgroup-restore-prefixed-aliases-for-DroidSpaces-LXC.patch"
+git -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0002-android-preserve-network-AID-capabilities.patch"
+git -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0002-android-preserve-network-AID-capabilities.patch"
+
+grep -Fq 'DroidSpaces/LXC compatibility' "${{KERNEL_DIR}}/kernel/cgroup.c" \\
+  || die "DroidSpaces cgroup compatibility patch was not applied"
+grep -Fqx '#include <linux/android_aid.h>' "${{KERNEL_DIR}}/security/commoncap.c" \\
+  || die "Android AID capability compatibility patch was not applied"
+if grep -Fq '#ifdef CONFIG_ANDROID_PARANOID_NETWORK' "${{KERNEL_DIR}}/security/commoncap.c"; then
+  die "security/commoncap.c still gates Android AID capabilities behind paranoid networking"
+fi''',
+    'kernel clone anchor',
+)
+
+# Configure Linux 4.9 for the container/runtime features DroidSpaces needs.
+config_pattern = re.compile(
+    r'"\$\{KERNEL_DIR\}/scripts/config" --file "\$KERNEL_CONFIG" --enable RD_LZMA\n'
+    r'make "\$\{MAKE_ARGS\[@\]\}" olddefconfig\n\n'
+    r'diff -u \\\n'
+    r'.*?\|\| die "an unexpected kernel configuration changed"\n',
+    re.S,
+)
+config_block = r'''readonly -a DROIDSPACES_REQUIRED_CONFIG=(
+  SYSVIPC
+  POSIX_MQUEUE
+  FHANDLE
+  CGROUPS
+  CGROUP_FREEZER
+  CGROUP_PIDS
+  CGROUP_DEVICE
+  CPUSETS
+  CGROUP_CPUACCT
+  MEMCG
+  MEMCG_SWAP
+  BLK_CGROUP
+  CGROUP_SCHED
+  FAIR_GROUP_SCHED
+  CGROUP_BPF
+  CHECKPOINT_RESTORE
+  NAMESPACES
+  UTS_NS
+  USER_NS
+  PID_NS
+  IPC_NS
+  NET_NS
+  CFS_BANDWIDTH
+  CGROUP_NET_PRIO
+  CGROUP_NET_CLASSID
+  DEVTMPFS
+  VETH
+  MACVLAN
+  IPVLAN
+  VXLAN
+  BRIDGE
+  BRIDGE_NETFILTER
+  NETFILTER
+  NETFILTER_ADVANCED
+  NF_CONNTRACK
+  NF_NAT
+  NETFILTER_XTABLES
+  NETFILTER_XT_MATCH_CONNTRACK
+  NETFILTER_XT_MATCH_ADDRTYPE
+  NETFILTER_XT_MATCH_RECENT
+  NETFILTER_XT_MATCH_TCPMSS
+  NETFILTER_XT_TARGET_MASQUERADE
+  NETFILTER_XT_TARGET_REJECT
+  IP_SET
+  IP_SET_HASH_IP
+  IP_SET_HASH_NET
+  NETFILTER_XT_SET
+  IP_NF_IPTABLES
+  IP_NF_FILTER
+  IP_NF_NAT
+  IP_NF_TARGET_MASQUERADE
+  IP_NF_TARGET_REJECT
+  IP_NF_MANGLE
+  NF_TABLES
+  NF_TABLES_INET
+  NFT_CT
+  NFT_COUNTER
+  NFT_LOG
+  NFT_LIMIT
+  NFT_MASQ
+  NFT_NAT
+  NFT_REDIR
+  NFT_COMPAT
+  NET_CLS_CGROUP
+  NET_ACT_BPF
+  BPF_JIT
+  OVERLAY_FS
+  UNIX98_PTYS
+  DEVPTS_MULTIPLE_INSTANCES
+  SECCOMP
+  IKCONFIG
+  IKCONFIG_PROC
+)
+readonly -a DROIDSPACES_OPTIONAL_CONFIG=(
+  CGROUP_PERF
+  NETFILTER_XT_TARGET_CHECKSUM
+  VLAN_8021Q
+)
+
+"${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --enable RD_LZMA
+for symbol in "${DROIDSPACES_REQUIRED_CONFIG[@]}"; do
+  "${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --enable "$symbol"
+done
+for symbol in "${DROIDSPACES_OPTIONAL_CONFIG[@]}"; do
+  "${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --enable "$symbol"
+done
+"${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --disable ANDROID_PARANOID_NETWORK
+make "${MAKE_ARGS[@]}" olddefconfig
+'''
+text, count = config_pattern.subn(config_block, text, count=1)
+if count != 1:
+    raise SystemExit(f"{source}: failed to replace 3.18 config override block")
+
+# Replace the 3.18-specific assertions with normalized 4.9 assertions.
+verify_pattern = re.compile(
+    r'if grep -Eq \'\^\(# \)\?CONFIG_KSU\(\[_= \]\|\$\)\' "\$KERNEL_CONFIG"; then\n'
+    r'.*?require_config \'CONFIG_IKCONFIG_PROC=y\'\n',
+    re.S,
+)
+verify_block = r'''require_config 'CONFIG_RD_LZMA=y'
+require_config 'CONFIG_DECOMPRESS_LZMA=y'
+require_config 'CONFIG_LOCALVERSION="-perf"'
+require_config '# CONFIG_LOCALVERSION_AUTO is not set'
+require_config 'CONFIG_ALBUS_DTB=y'
+require_config '# CONFIG_ANDROID_PARANOID_NETWORK is not set'
+
+for symbol in "${DROIDSPACES_REQUIRED_CONFIG[@]}"; do
+  grep -Fqx "CONFIG_${symbol}=y" "$KERNEL_CONFIG" \
+    || die "required DroidSpaces Linux 4.9 config was not retained: CONFIG_${symbol}=y"
+done
+for symbol in "${DROIDSPACES_OPTIONAL_CONFIG[@]}"; do
+  if ! grep -Fqx "CONFIG_${symbol}=y" "$KERNEL_CONFIG"; then
+    printf 'warning: optional DroidSpaces config unavailable after olddefconfig: CONFIG_%s\n' "$symbol" >&2
+  fi
+done
+'''
+text, count = verify_pattern.subn(verify_block, text, count=1)
+if count != 1:
+    raise SystemExit(f"{source}: failed to replace 3.18 config verification block")
+
+# Motorola's separated DT must come from the 4.9 Albus DTBs, not the 3.18
+# DT embedded in the stock TWRP image. Build only from the qcom output dir.
+replace_once(
+    '''  "${KERNEL_OUT}/arch/arm64/boot/"
+
+[[ "$(dd if="$DT_IMAGE" bs=1 count=4 status=none)" == "QCDT" ]] \\
+''',
+    '''  "${KERNEL_OUT}/arch/arm64/boot/dts/qcom/"
+
+[[ "$(dd if="$DT_IMAGE" bs=1 count=4 status=none)" == "QCDT" ]] \\
+''',
+    'dtbTool input directory',
+)
+text = text.replace('check_size "$EXPECTED_DT_SIZE" "$DT_IMAGE"\n', '')
+text = text.replace('check_sha256 "$REFERENCE_DT_SHA256" "$DT_IMAGE"\n', '')
+
+# Add Recovery Console to the preserved TWRP ramdisk after replacing kernel+DT.
 replace_once(
     '''cp "$KERNEL_IMAGE" "${REPACK_DIR}/kernel"
 cp "$DT_IMAGE" "${REPACK_DIR}/extra"
@@ -77,7 +289,7 @@ readonly PATCHED_RAMDISK_SHA256
 [[ "$PATCHED_RAMDISK_SHA256" != "$TWRP_RAMDISK_SHA256" ]] \\
   || die "recovery-console integration did not modify the ramdisk"
 
-note "Repack recovery.img with the new kernel, matching DT and recovery-console ramdisk"
+note "Repack recovery.img with Linux 4.9, matching DT, DroidSpaces and recovery-console"
 ''',
     'kernel/DT repack anchor',
 )
@@ -106,6 +318,12 @@ cp "$KERNEL_IMAGE" "${ARTIFACT_DIR}/Image.gz"
 replace_once(
     "  printf 'ramdisk_lzma=enabled\\n'\n",
     "  printf 'ramdisk_lzma=enabled\\n'\n"
+    f"  printf 'kernel_source_tree=%s\\n' '{kernel_tree}'\n"
+    "  printf 'kernel_version=4.9\\n'\n"
+    "  printf 'droidspaces=enabled\\n'\n"
+    "  printf 'droidspaces_cgroup_alias_patch=ravindu644\\n'\n"
+    "  printf 'droidspaces_android_aid_compat=enabled\\n'\n"
+    "  printf 'android_paranoid_network=disabled\\n'\n"
     f"  printf 'recovery_console_commit=%s\\n' '{console_commit}'\n"
     "  printf 'recovery_console_sha256=%s\\n' \"$RECOVERY_CONSOLE_SHA256\"\n"
     "  printf 'recovery_console_path=/system/bin/recovery-console\\n'\n"
@@ -130,9 +348,14 @@ out.write_text(text)
 out.chmod(0o755)
 PY
 
-printf 'Recovery Console branch build\n'
-printf 'Base recipe: scripts/build.sh + current lineage-15.1 kernel wrapper\n'
+printf 'Recovery Console + DroidSpaces Linux 4.9 branch build\n'
+printf 'Base recipe: recovery-console-clean\n'
+printf 'Kernel source: %s\n' "$KERNEL_REPO_49"
+printf 'Kernel commit: %s\n' "$KERNEL_COMMIT_49"
+printf 'Kernel tree: %s\n' "$KERNEL_TREE_49"
 printf 'Recovery Console commit: %s\n' "$RECOVERY_CONSOLE_COMMIT"
+printf 'DroidSpaces: enabled (4.9-native config + cgroup/AID compatibility)\n'
+printf 'KernelSU: absent from the pristine 4.9 source\n'
 printf 'Overclock: disabled / not used\n\n'
 
-python3 "${ROOT_DIR}/scripts/run-current-kernel-builder.py" "$GENERATED_BUILDER"
+bash "$GENERATED_BUILDER"
