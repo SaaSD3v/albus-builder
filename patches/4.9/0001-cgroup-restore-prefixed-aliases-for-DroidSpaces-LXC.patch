@@ -14,7 +14,7 @@ Signed-off-by: ravindu644 <droidcasts@protonmail.com>
 diff --git a/kernel/cgroup.c b/kernel/cgroup.c
 --- a/kernel/cgroup.c
 +++ b/kernel/cgroup.c
-@@ -3788,6 +3788,20 @@ static int cgroup_add_file(struct cgroup_subsys_state *css, struct cgroup *cgrp,
+@@ -3788,5 +3788,19 @@ static int cgroup_add_file(struct cgroup_subsys_state *css, struct cgroup *cgrp,
  		spin_unlock_irq(&cgroup_file_kn_lock);
  	}
  
