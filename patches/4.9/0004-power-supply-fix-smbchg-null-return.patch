@@ -11,14 +11,13 @@ Validate chip before dereferencing it and return the existing
 POWER_SUPPLY_HEALTH_UNKNOWN state for the invalid-input case. This keeps the
 normal path unchanged while making the function valid for Clang 11.
 ---
- drivers/power/supply/qcom/qpnp-smbcharger-mmi.c | 7 +++++--
- 1 file changed, 5 insertions(+), 2 deletions(-)
+ drivers/power/supply/qcom/qpnp-smbcharger-mmi.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
 
 diff --git a/drivers/power/supply/qcom/qpnp-smbcharger-mmi.c b/drivers/power/supply/qcom/qpnp-smbcharger-mmi.c
-index 782f6e5aa919..000000000000 100644
 --- a/drivers/power/supply/qcom/qpnp-smbcharger-mmi.c
 +++ b/drivers/power/supply/qcom/qpnp-smbcharger-mmi.c
-@@ -3361,10 +3361,13 @@ static char *smb_health_text[] = {
+@@ -3361,10 +3361,12 @@ static char *smb_health_text[] = {
  static int smbchg_check_temp_state(struct smbchg_chip *chip, int batt_temp)
  {
  	int hotspot;
