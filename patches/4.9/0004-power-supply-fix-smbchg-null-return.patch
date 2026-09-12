@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SaaSD3v <noreply@github.com>
+Date: Sat, 12 Sep 2026 00:45:00 -0300
+Subject: [PATCH] power: supply: fix smbchg_check_temp_state null return
+
+smbchg_check_temp_state() returns an int, but its NULL guard uses a bare
+return. It also dereferences chip while initializing temp_state before the
+NULL guard runs.
+
+Validate chip before dereferencing it and return the existing
+POWER_SUPPLY_HEALTH_UNKNOWN state for the invalid-input case. This keeps the
+normal path unchanged while making the function valid for Clang 11.
+---
+ drivers/power/supply/qcom/qpnp-smbcharger-mmi.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/power/supply/qcom/qpnp-smbcharger-mmi.c b/drivers/power/supply/qcom/qpnp-smbcharger-mmi.c
+index 782f6e5aa919..000000000000 100644
+--- a/drivers/power/supply/qcom/qpnp-smbcharger-mmi.c
++++ b/drivers/power/supply/qcom/qpnp-smbcharger-mmi.c
+@@ -3361,10 +3361,13 @@ static char *smb_health_text[] = {
+ static int smbchg_check_temp_state(struct smbchg_chip *chip, int batt_temp)
+ {
+ 	int hotspot;
+-	int temp_state = chip->temp_state;
++	int temp_state;
+ 
+ 	if (!chip)
+-		return;
++		return POWER_SUPPLY_HEALTH_UNKNOWN;
++
++	temp_state = chip->temp_state;
+ 
+ 	mutex_lock(&chip->check_temp_lock);
+ 
+-- 
+2.39.2
