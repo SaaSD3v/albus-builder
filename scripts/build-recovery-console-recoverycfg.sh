@@ -36,8 +36,10 @@ if text.count(check_anchor) != 1:
     raise SystemExit('failed to find 0002 patch presence check')
 text = text.replace(check_anchor, check_extra, 1)
 
-apply_anchor = 'git -C "$KERNEL_DIR" apply "${ROOT_DIR}/patches/4.9/0002-android-preserve-network-AID-capabilities.patch"'
-apply_extra = apply_anchor + '\ngit -C "$KERNEL_DIR" apply --check "${ROOT_DIR}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"\ngit -C "$KERNEL_DIR" apply "${ROOT_DIR}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"'
+# These strings live inside an f-string in build-recovery-console.sh, so the
+# source form intentionally contains doubled braces around ROOT_DIR.
+apply_anchor = 'git -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0002-android-preserve-network-AID-capabilities.patch"'
+apply_extra = apply_anchor + '\ngit -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"\ngit -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"'
 if text.count(apply_anchor) != 1:
     raise SystemExit('failed to find 0002 patch apply anchor')
 text = text.replace(apply_anchor, apply_extra, 1)
