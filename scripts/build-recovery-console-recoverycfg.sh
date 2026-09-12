@@ -44,14 +44,46 @@ if text.count(apply_anchor) != 1:
     raise SystemExit('failed to find 0002 patch apply anchor')
 text = text.replace(apply_anchor, apply_extra, 1)
 
+# The 4.9 Albus device tree explicitly builds the kernel with Clang. Keep the
+# pinned GCC 4.9 toolchains as binutils/backends, but make Clang 14 the C
+# compiler just like LineageOS does for this kernel generation. The base 3.18
+# recipe passes KCFLAGS=-mno-android; Clang rejects that GCC-only option.
 anchor = "config_pattern=re.compile("
-injection = "replace_once('make \\\"${MAKE_ARGS[@]}\\\" albus_defconfig','make \\\"${MAKE_ARGS[@]}\\\" recovery_albus_defconfig','4.9 recovery defconfig target')\n"
+injection = r"""replace_once('make \"${MAKE_ARGS[@]}\" albus_defconfig','make \"${MAKE_ARGS[@]}\" recovery_albus_defconfig','4.9 recovery defconfig target')
+replace_once('''readonly -a MAKE_ARGS=(
+  -C "$KERNEL_DIR"
+  "O=$KERNEL_OUT"
+  "ARCH=$ARCH"
+  "SUBARCH=$SUBARCH"
+  "CROSS_COMPILE=$CROSS_COMPILE"
+  "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
+)''','''readonly -a MAKE_ARGS=(
+  -C "$KERNEL_DIR"
+  "O=$KERNEL_OUT"
+  "ARCH=$ARCH"
+  "SUBARCH=$SUBARCH"
+  "CROSS_COMPILE=$CROSS_COMPILE"
+  "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
+  "CC=clang-14"
+  "CLANG_TRIPLE=aarch64-linux-gnu-"
+)''','LineageOS-style Clang 14 kernel compiler')
+if text.count('KCFLAGS=-mno-android') != 1:
+    raise SystemExit('expected exactly one GCC-only KCFLAGS=-mno-android')
+text = text.replace('KCFLAGS=-mno-android', 'KCFLAGS=', 1)
+replace_once('''python --version
+"${CROSS_COMPILE}gcc" --version
+''','''python --version
+command -v clang-14 >/dev/null 2>&1 || die "clang-14 is required for the Albus 4.9 kernel"
+clang-14 --version
+"${CROSS_COMPILE}gcc" --version
+''','Clang 14 availability check')
+"""
 if text.count(anchor) != 1:
     raise SystemExit('failed to find config_pattern anchor')
 text = text.replace(anchor, injection + anchor, 1)
 
 banner = "printf 'Kernel commit: %s\\n' \"$KERNEL_COMMIT_49\"\n"
-extra = "printf 'Kernel config: recovery_albus_defconfig (upstream Marcost2)\\n'\n"
+extra = "printf 'Kernel config: recovery_albus_defconfig (upstream Marcost2)\\n'\nprintf 'Kernel compiler: clang-14 + GNU 4.9 binutils\\n'\n"
 if text.count(banner) != 1:
     raise SystemExit('failed to find banner anchor')
 text = text.replace(banner, banner + extra, 1)
