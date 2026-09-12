@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SaaSD3v <hearesaas@gmail.com>
+Date: Fri, 11 Sep 2026 23:59:00 -0300
+Subject: [PATCH] arm64: fix cache and AES syntax for LLVM integrated assembler
+
+Port two syntax-only ARM64 fixes used by later MSM8953 kernels so the
+Albus 4.9 tree can be assembled by LLVM IAS:
+
+* compare the dc operation macro argument textually with .ifc instead of
+  treating cvau/cvac as absolute assembler expressions;
+* address the first 32-bit vector lane as v0.s[0] for UMOV instead of
+  the GNU-as-only v0.4s[0] spelling.
+
+Neither change alters the intended cache-maintenance or AES behavior.
+---
+ arch/arm64/crypto/aes-ce-cipher-core.c |  2 +-
+ arch/arm64/include/asm/assembler.h      | 16 ++++++++++------
+ 2 files changed, 11 insertions(+), 7 deletions(-)
+
+diff --git a/arch/arm64/include/asm/assembler.h b/arch/arm64/include/asm/assembler.h
+index 8351201633f2..f1a200000000 100644
+--- a/arch/arm64/include/asm/assembler.h
++++ b/arch/arm64/include/asm/assembler.h
+@@ -383,17 +383,21 @@ alternative_endif
+  * \tCorrupts:\tkaddr, size, tmp1, tmp2
+  */
++	.macro __dcache_op_workaround_clean_cache, op, kaddr
++alternative_if_not ARM64_WORKAROUND_CLEAN_CACHE
++	dc	\op, \kaddr
++alternative_else
++	dc	civac, \kaddr
++alternative_endif
++	.endm
++
+ 	.macro dcache_by_line_op op, domain, kaddr, size, tmp1, tmp2
+ 	dcache_line_size \tmp1, \tmp2
+ 	add	\size, \kaddr, \size
+ 	sub	\tmp2, \tmp1, #1
+ 	bic	\kaddr, \kaddr, \tmp2
+ 9998:
+-	.if	(\op == cvau || \op == cvac)
+-alternative_if_not ARM64_WORKAROUND_CLEAN_CACHE
+-	dc	\op, \kaddr
+-alternative_else
+-	dc	civac, \kaddr
+-alternative_endif
++	.ifc	\op, cvau
++	__dcache_op_workaround_clean_cache \op, \kaddr
++	.else
++	.ifc	\op, cvac
++	__dcache_op_workaround_clean_cache \op, \kaddr
+ 	.else
+ 	dc	\op, \kaddr
+ 	.endif
++	.endif
+ 	add	\kaddr, \kaddr, \tmp1
+ 	cmp	\kaddr, \size
+ 	b.lo	9998b
+diff --git a/arch/arm64/crypto/aes-ce-cipher-core.c b/arch/arm64/crypto/aes-ce-cipher-core.c
+index 9f4191774b35..a10000000000 100644
+--- a/arch/arm64/crypto/aes-ce-cipher-core.c
++++ b/arch/arm64/crypto/aes-ce-cipher-core.c
+@@ -131,7 +131,7 @@ static u32 aes_sub(u32 input)
+ 	__asm__("dup\tv1.4s, %w[in]\t\t;"
+ 		"movi\tv0.16b, #0\t\t;"
+ 		"aese\tv0.16b, v1.16b\t\t;"
+-		"umov\t%w[out], v0.4s[0]\t;"
++		"umov\t%w[out], v0.s[0]\t;"
+ 
+ 	:\t[out]\t"=r"(ret)
+ 	:\t[in]\t"r"(input)
+-- 
+2.55.0
