@@ -66,19 +66,8 @@ def sub_once(pattern: str, replacement: str, label: str, flags: int = 0) -> None
     if count != 1:
         raise SystemExit(f"{source}: expected exactly one {label}, found {count}")
 
-# Switch only the kernel side of the known-good recovery recipe to the pristine
-# marcost2 Albus 4.9 tree. TWRP, repack geometry and recovery-console remain
-# inherited from recovery-console-clean.
-sub_once(
-    r'readonly KERNEL_REPO="[^"]+"',
-    f'readonly KERNEL_REPO="{kernel_repo}"',
-    'KERNEL_REPO',
-)
-sub_once(
-    r'readonly KERNEL_COMMIT="[0-9a-f]{40}"',
-    f'readonly KERNEL_COMMIT="{kernel_commit}"',
-    'KERNEL_COMMIT',
-)
+sub_once(r'readonly KERNEL_REPO="[^"]+"', f'readonly KERNEL_REPO="{kernel_repo}"', 'KERNEL_REPO')
+sub_once(r'readonly KERNEL_COMMIT="[0-9a-f]{40}"', f'readonly KERNEL_COMMIT="{kernel_commit}"', 'KERNEL_COMMIT')
 
 replace_once(
     '''  "$ARTIFACT_DIR/recovery.img" \\
@@ -91,8 +80,6 @@ replace_once(
     'artifact cleanup anchor',
 )
 
-# Apply only the two source-level DroidSpaces compatibility patches. The first
-# retains the original ravindu644 authorship in the bundled patch header.
 clone_line = 'clone_commit "$KERNEL_REPO" "$KERNEL_COMMIT" "$KERNEL_DIR"'
 replace_once(
     clone_line,
@@ -115,7 +102,6 @@ fi''',
     'kernel clone anchor',
 )
 
-# Configure Linux 4.9 for the container/runtime features DroidSpaces needs.
 config_pattern = re.compile(
     r'"\$\{KERNEL_DIR\}/scripts/config" --file "\$KERNEL_CONFIG" --enable RD_LZMA\n'
     r'make "\$\{MAKE_ARGS\[@\]\}" olddefconfig\n\n'
@@ -146,6 +132,7 @@ config_block = r'''readonly -a DROIDSPACES_REQUIRED_CONFIG=(
   PID_NS
   IPC_NS
   NET_NS
+  IPV6
   CGROUP_NET_PRIO
   CGROUP_NET_CLASSID
   DEVTMPFS
@@ -186,6 +173,8 @@ config_block = r'''readonly -a DROIDSPACES_REQUIRED_CONFIG=(
   NFT_NAT
   NFT_REDIR
   NFT_COMPAT
+  NET_SCHED
+  NET_CLS_ACT
   NET_CLS_CGROUP
   NET_ACT_BPF
   BPF_JIT
@@ -217,7 +206,6 @@ text, count = config_pattern.subn(config_block, text, count=1)
 if count != 1:
     raise SystemExit(f"{source}: failed to replace 3.18 config override block")
 
-# Replace the 3.18-specific assertions with normalized 4.9 assertions.
 verify_pattern = re.compile(
     r'if grep -Eq \'\^\(# \)\?CONFIG_KSU\(\[_= \]\|\$\)\' "\$KERNEL_CONFIG"; then\n'
     r'.*?require_config \'CONFIG_IKCONFIG_PROC=y\'\n',
@@ -244,8 +232,6 @@ text, count = verify_pattern.subn(verify_block, text, count=1)
 if count != 1:
     raise SystemExit(f"{source}: failed to replace 3.18 config verification block")
 
-# Motorola's separated DT must come from the 4.9 Albus DTBs, not the 3.18
-# DT embedded in the stock TWRP image. Build only from the qcom output dir.
 replace_once(
     '''  "${KERNEL_OUT}/arch/arm64/boot/"
 
@@ -260,7 +246,6 @@ replace_once(
 text = text.replace('check_size "$EXPECTED_DT_SIZE" "$DT_IMAGE"\n', '')
 text = text.replace('check_sha256 "$REFERENCE_DT_SHA256" "$DT_IMAGE"\n', '')
 
-# Add Recovery Console to the preserved TWRP ramdisk after replacing kernel+DT.
 replace_once(
     '''cp "$KERNEL_IMAGE" "${REPACK_DIR}/kernel"
 cp "$DT_IMAGE" "${REPACK_DIR}/extra"
