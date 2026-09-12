@@ -96,8 +96,6 @@ config_block=r'''readonly -a DROIDSPACES_REQUIRED_CONFIG=(
   NETFILTER_XT_MATCH_ADDRTYPE
   NETFILTER_XT_MATCH_RECENT
   NETFILTER_XT_MATCH_TCPMSS
-  NETFILTER_XT_TARGET_MASQUERADE
-  NETFILTER_XT_TARGET_REJECT
   IP_SET
   IP_SET_HASH_IP
   IP_SET_HASH_NET
@@ -151,9 +149,14 @@ require_config 'CONFIG_LOCALVERSION="-perf"'
 require_config '# CONFIG_LOCALVERSION_AUTO is not set'
 require_config 'CONFIG_ALBUS_DTB=y'
 require_config '# CONFIG_ANDROID_PARANOID_NETWORK is not set'
+missing_required=0
 for symbol in "${DROIDSPACES_REQUIRED_CONFIG[@]}"; do
-  grep -Fqx "CONFIG_${symbol}=y" "$KERNEL_CONFIG" || die "required DroidSpaces Linux 4.9 config was not retained: CONFIG_${symbol}=y"
+  if ! grep -Fqx "CONFIG_${symbol}=y" "$KERNEL_CONFIG"; then
+    printf 'error: required DroidSpaces Linux 4.9 config was not retained: CONFIG_%s=y\n' "$symbol" >&2
+    missing_required=1
+  fi
 done
+(( missing_required == 0 )) || die "one or more required DroidSpaces Linux 4.9 config symbols were rejected by Kconfig"
 for symbol in "${DROIDSPACES_OPTIONAL_CONFIG[@]}"; do
   if ! grep -Fqx "CONFIG_${symbol}=y" "$KERNEL_CONFIG"; then printf 'warning: optional DroidSpaces config unavailable after olddefconfig: CONFIG_%s\n' "$symbol" >&2; fi
 done
