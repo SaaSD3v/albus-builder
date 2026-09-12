@@ -51,7 +51,7 @@ jobs:
       - name: Build recovery with Recovery Console and DroidSpaces 4.9
         run: |
           set -o pipefail
-          bash scripts/build-recovery-console.sh 2>&1 | tee build.log
+          bash scripts/build-recovery-console-recoverycfg.sh 2>&1 | tee build.log
 
       - name: Upload build log
         if: ${{ always() }}
