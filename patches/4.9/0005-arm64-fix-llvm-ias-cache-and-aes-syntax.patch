@@ -46,12 +46,6 @@ diff --git a/arch/arm64/include/asm/assembler.h b/arch/arm64/include/asm/assembl
 diff --git a/arch/arm64/crypto/aes-ce-cipher-core.c b/arch/arm64/crypto/aes-ce-cipher-core.c
 --- a/arch/arm64/crypto/aes-ce-cipher-core.c
 +++ b/arch/arm64/crypto/aes-ce-cipher-core.c
-@@ -128,7 +128,7 @@
- 	__asm__("dup\tv1.4s, %w[in]\t\t;"
- 		"movi\tv0.16b, #0\t\t;"
- 		"aese\tv0.16b, v1.16b\t\t;"
--		"umov\t%w[out], v0.4s[0]\t;"
-+		"umov\t%w[out], v0.s[0]\t;"
- 
- 	:	[out]	"=r"(ret)
- 	:	[in]	"r"(input)
+@@ -134 +134 @@
+-		"umov	%w[out], v0.4s[0]	;"
++		"umov	%w[out], v0.s[0]	;"
