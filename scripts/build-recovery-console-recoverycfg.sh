@@ -27,11 +27,10 @@ for old, new in replacements.items():
         raise SystemExit(f'expected exactly one occurrence of: {old}')
     text = text.replace(old, new, 1)
 
-# The newer upstream recovery config exposes the NQ-NCI build bug that was
-# already fixed during the earlier Albus 4.9 validation. Reuse that exact,
-# attributed fix instead of changing the kernel logic here.
+# Extra compatibility patches needed by the upstream recovery config and the
+# LineageOS-style LLVM toolchain used for the Albus 4.9 kernel.
 check_anchor = '[[ -f "${ROOT_DIR}/patches/4.9/0002-android-preserve-network-AID-capabilities.patch" ]] || { echo "error: Android network AID patch is missing" >&2; exit 1; }'
-check_extra = check_anchor + '\n[[ -f "${ROOT_DIR}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch" ]] || { echo "error: NQ-NCI 4.9 compile fix is missing" >&2; exit 1; }'
+check_extra = check_anchor + '\n[[ -f "${ROOT_DIR}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch" ]] || { echo "error: NQ-NCI 4.9 compile fix is missing" >&2; exit 1; }\n[[ -f "${ROOT_DIR}/patches/4.9/0004-arm64-vdso-fix-llvm-ias-macro-call.patch" ]] || { echo "error: ARM64 VDSO LLVM IAS fix is missing" >&2; exit 1; }'
 if text.count(check_anchor) != 1:
     raise SystemExit('failed to find 0002 patch presence check')
 text = text.replace(check_anchor, check_extra, 1)
@@ -39,7 +38,7 @@ text = text.replace(check_anchor, check_extra, 1)
 # These strings live inside an f-string in build-recovery-console.sh, so the
 # source form intentionally contains doubled braces around ROOT_DIR.
 apply_anchor = 'git -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0002-android-preserve-network-AID-capabilities.patch"'
-apply_extra = apply_anchor + '\ngit -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"\ngit -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"'
+apply_extra = apply_anchor + '\ngit -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"\ngit -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"\ngit -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0004-arm64-vdso-fix-llvm-ias-macro-call.patch"\ngit -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0004-arm64-vdso-fix-llvm-ias-macro-call.patch"'
 if text.count(apply_anchor) != 1:
     raise SystemExit('failed to find 0002 patch apply anchor')
 text = text.replace(apply_anchor, apply_extra, 1)
