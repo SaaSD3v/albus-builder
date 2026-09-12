@@ -63,10 +63,13 @@ mkdir -p "$CLANG_TOOLCHAIN_DIR"
 curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 \
   "$CLANG_TOOLCHAIN_URL" --output "$CLANG_TOOLCHAIN_ARCHIVE"
 tar -xzf "$CLANG_TOOLCHAIN_ARCHIVE" -C "$CLANG_TOOLCHAIN_DIR"
-[[ "$(cat "$CLANG_TOOLCHAIN_DIR/AndroidVersion.txt")" == "11.0.2" ]] \
-  || die "unexpected AOSP clang-r383902b1 AndroidVersion"
-"$CLANG_TOOLCHAIN_DIR/bin/clang" --version | grep -Fq '11.0.2' \
+printf 'AOSP AndroidVersion: '; cat "$CLANG_TOOLCHAIN_DIR/AndroidVersion.txt"
+CLANG_VERSION_OUTPUT="$("$CLANG_TOOLCHAIN_DIR/bin/clang" --version)"
+printf '%s\n' "$CLANG_VERSION_OUTPUT"
+grep -Fq '11.0.2' <<<"$CLANG_VERSION_OUTPUT" \
   || die "unexpected clang version in clang-r383902b1"
+grep -Fq 'r383902b1' <<<"$CLANG_VERSION_OUTPUT" \
+  || die "unexpected clang revision in clang-r383902b1"
 clone_commit "$DTBTOOL_REPO" "$DTBTOOL_COMMIT" "$DTBTOOL_DIR"''','download official LineageOS 18.1 era Clang')
 replace_once('''export PATH="${AARCH64_TOOLCHAIN_DIR}/bin:${ARM_TOOLCHAIN_DIR}/bin:${PATH}"''','''export PATH="${CLANG_TOOLCHAIN_DIR}/bin:${AARCH64_TOOLCHAIN_DIR}/bin:${ARM_TOOLCHAIN_DIR}/bin:${PATH}"''','historical Clang PATH precedence')
 replace_once('''readonly -a MAKE_ARGS=(
