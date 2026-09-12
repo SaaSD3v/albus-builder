@@ -27,10 +27,12 @@ for old, new in replacements.items():
         raise SystemExit(f'expected exactly one occurrence of: {old}')
     text = text.replace(old, new, 1)
 
-# Extra compatibility patches needed by the upstream recovery config and the
-# LineageOS-style LLVM toolchain used for the Albus 4.9 kernel.
+# The upstream Albus device tree is LineageOS 18.1. Its kernel build path uses
+# Clang for C while keeping the GNU cross toolchains/binutils. Only keep the
+# source compatibility patch that is independent of the LLVM integrated
+# assembler experiments.
 check_anchor = '[[ -f "${ROOT_DIR}/patches/4.9/0002-android-preserve-network-AID-capabilities.patch" ]] || { echo "error: Android network AID patch is missing" >&2; exit 1; }'
-check_extra = check_anchor + '\n[[ -f "${ROOT_DIR}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch" ]] || { echo "error: NQ-NCI 4.9 compile fix is missing" >&2; exit 1; }\n[[ -f "${ROOT_DIR}/patches/4.9/0004-arm64-vdso-fix-llvm-ias-macro-call.patch" ]] || { echo "error: ARM64 VDSO LLVM IAS fix is missing" >&2; exit 1; }\n[[ -f "${ROOT_DIR}/patches/4.9/0005-arm64-fix-llvm-ias-cache-and-aes-syntax.patch" ]] || { echo "error: ARM64 cache LLVM IAS fix is missing" >&2; exit 1; }'
+check_extra = check_anchor + '\n[[ -f "${ROOT_DIR}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch" ]] || { echo "error: NQ-NCI 4.9 compile fix is missing" >&2; exit 1; }'
 if text.count(check_anchor) != 1:
     raise SystemExit('failed to find 0002 patch presence check')
 text = text.replace(check_anchor, check_extra, 1)
@@ -38,17 +40,35 @@ text = text.replace(check_anchor, check_extra, 1)
 # These strings live inside an f-string in build-recovery-console.sh, so the
 # source form intentionally contains doubled braces around ROOT_DIR.
 apply_anchor = 'git -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0002-android-preserve-network-AID-capabilities.patch"'
-apply_extra = apply_anchor + '\ngit -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"\ngit -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"\ngit -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0004-arm64-vdso-fix-llvm-ias-macro-call.patch"\ngit -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0004-arm64-vdso-fix-llvm-ias-macro-call.patch"\ngit -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0005-arm64-fix-llvm-ias-cache-and-aes-syntax.patch"\ngit -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0005-arm64-fix-llvm-ias-cache-and-aes-syntax.patch"\npython3 - "$KERNEL_DIR/arch/arm64/crypto/aes-ce-cipher-core.c" <<\'PY_AES\'\nfrom pathlib import Path\nimport sys\np = Path(sys.argv[1])\ns = p.read_text()\nold = "v0.4s[0]"\nnew = "v0.s[0]"\ncount = s.count(old)\nif count != 1:\n    raise SystemExit("expected exactly one ARM64 AES UMOV source operand %r, found %d" % (old, count))\ns = s.replace(old, new, 1)\nif s.count(new) != 1:\n    raise SystemExit("ARM64 AES UMOV replacement validation failed")\np.write_text(s)\nPY_AES'
+apply_extra = apply_anchor + '\ngit -C "$KERNEL_DIR" apply --check "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"\ngit -C "$KERNEL_DIR" apply "${{ROOT_DIR}}/patches/4.9/0003-nfc-nq-nci-pass-device-context-to-hardware-check.patch"'
 if text.count(apply_anchor) != 1:
     raise SystemExit('failed to find 0002 patch apply anchor')
 text = text.replace(apply_anchor, apply_extra, 1)
 
-# Match the LineageOS 20 kernel build model used by the Albus device tree:
-# Clang for C, LLVM integrated assembler, LLD and llvm-ar. Keep the pinned
-# Android GCC 4.9 prefixes available as compatibility toolchains because this
-# 4.9 tree still consumes CROSS_COMPILE/CROSS_COMPILE_ARM32 in a few places.
+# Reproduce the LineageOS 18.1 kernel build model used by the Albus device
+# tree. LineageOS 18.1 defaults to AOSP clang-r383902b1 (Clang 11.0.2), with
+# CC=clang and CLANG_TRIPLE=aarch64-linux-gnu-. It does not force LLVM=1,
+# LLVM_IAS=1 or LLD for this device.
 anchor = "config_pattern=re.compile("
 injection = r"""replace_once('make \"${MAKE_ARGS[@]}\" albus_defconfig','make \"${MAKE_ARGS[@]}\" recovery_albus_defconfig','4.9 recovery defconfig target')
+replace_once('''readonly ARM_TOOLCHAIN_DIR="${WORK_DIR}/arm-toolchain"
+readonly DTBTOOL_DIR="${WORK_DIR}/dtbtool"''','''readonly ARM_TOOLCHAIN_DIR="${WORK_DIR}/arm-toolchain"
+readonly CLANG_TOOLCHAIN_DIR="${WORK_DIR}/clang-r383902b1"
+readonly CLANG_TOOLCHAIN_ARCHIVE="${WORK_DIR}/clang-r383902b1.tar.gz"
+readonly CLANG_TOOLCHAIN_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-qpr2-release/clang-r383902b1.tar.gz"
+readonly DTBTOOL_DIR="${WORK_DIR}/dtbtool"''','LineageOS 18.1 Clang work paths')
+replace_once('''clone_tag "$ARM_TOOLCHAIN_REPO" "$TOOLCHAIN_TAG" "$ARM_TOOLCHAIN_TAG_OBJECT" "$ARM_TOOLCHAIN_COMMIT" "$ARM_TOOLCHAIN_DIR"
+clone_commit "$DTBTOOL_REPO" "$DTBTOOL_COMMIT" "$DTBTOOL_DIR"''','''clone_tag "$ARM_TOOLCHAIN_REPO" "$TOOLCHAIN_TAG" "$ARM_TOOLCHAIN_TAG_OBJECT" "$ARM_TOOLCHAIN_COMMIT" "$ARM_TOOLCHAIN_DIR"
+mkdir -p "$CLANG_TOOLCHAIN_DIR"
+curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 \
+  "$CLANG_TOOLCHAIN_URL" --output "$CLANG_TOOLCHAIN_ARCHIVE"
+tar -xzf "$CLANG_TOOLCHAIN_ARCHIVE" -C "$CLANG_TOOLCHAIN_DIR"
+[[ "$(cat "$CLANG_TOOLCHAIN_DIR/AndroidVersion.txt")" == "11.0.2" ]] \
+  || die "unexpected AOSP clang-r383902b1 AndroidVersion"
+"$CLANG_TOOLCHAIN_DIR/bin/clang" --version | grep -Fq '11.0.2' \
+  || die "unexpected clang version in clang-r383902b1"
+clone_commit "$DTBTOOL_REPO" "$DTBTOOL_COMMIT" "$DTBTOOL_DIR"''','download official LineageOS 18.1 era Clang')
+replace_once('''export PATH="${AARCH64_TOOLCHAIN_DIR}/bin:${ARM_TOOLCHAIN_DIR}/bin:${PATH}"''','''export PATH="${CLANG_TOOLCHAIN_DIR}/bin:${AARCH64_TOOLCHAIN_DIR}/bin:${ARM_TOOLCHAIN_DIR}/bin:${PATH}"''','historical Clang PATH precedence')
 replace_once('''readonly -a MAKE_ARGS=(
   -C "$KERNEL_DIR"
   "O=$KERNEL_OUT"
@@ -63,34 +83,25 @@ replace_once('''readonly -a MAKE_ARGS=(
   "SUBARCH=$SUBARCH"
   "CROSS_COMPILE=$CROSS_COMPILE"
   "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
-  "CC=clang-14"
+  "CC=$CLANG_TOOLCHAIN_DIR/bin/clang"
   "CLANG_TRIPLE=aarch64-linux-gnu-"
-  "LD=ld.lld-14"
-  "AR=llvm-ar-14"
-  "LLVM=1"
-  "LLVM_IAS=1"
-)''','LineageOS-style Clang/LLVM kernel toolchain')
-if text.count('KCFLAGS=-mno-android') != 1:
-    raise SystemExit('expected exactly one GCC-only KCFLAGS=-mno-android')
-text = text.replace('KCFLAGS=-mno-android', 'KCFLAGS=', 1)
+)''','LineageOS 18.1 Clang/GNU kernel toolchain')
 replace_once('''python --version
 "${CROSS_COMPILE}gcc" --version
 ''','''python --version
-command -v clang-14 >/dev/null 2>&1 || die "clang-14 is required for the Albus 4.9 kernel"
-command -v ld.lld-14 >/dev/null 2>&1 || die "ld.lld-14 is required for the Albus 4.9 kernel"
-command -v llvm-ar-14 >/dev/null 2>&1 || die "llvm-ar-14 is required for the Albus 4.9 kernel"
-clang-14 --version
-ld.lld-14 --version
-llvm-ar-14 --version
+"$CLANG_TOOLCHAIN_DIR/bin/clang" --version
 "${CROSS_COMPILE}gcc" --version
-''','LLVM toolchain availability check')
+''','historical Clang toolchain version check')
+if text.count('  KCFLAGS=-mno-android \\\n') != 1:
+    raise SystemExit('expected exactly one legacy KCFLAGS=-mno-android build line')
+text = text.replace('  KCFLAGS=-mno-android \\\n', '', 1)
 """
 if text.count(anchor) != 1:
     raise SystemExit('failed to find config_pattern anchor')
 text = text.replace(anchor, injection + anchor, 1)
 
 banner = "printf 'Kernel commit: %s\\n' \"$KERNEL_COMMIT_49\"\n"
-extra = "printf 'Kernel config: recovery_albus_defconfig (upstream Marcost2)\\n'\nprintf 'Kernel compiler: clang-14 + LLVM IAS/LLD (LineageOS 20 model)\\n'\n"
+extra = "printf 'Kernel config: recovery_albus_defconfig (upstream Marcost2)\\n'\nprintf 'Kernel compiler: AOSP clang-r383902b1 / Clang 11.0.2 + GNU binutils (LineageOS 18.1 model)\\n'\n"
 if text.count(banner) != 1:
     raise SystemExit('failed to find banner anchor')
 text = text.replace(banner, banner + extra, 1)
