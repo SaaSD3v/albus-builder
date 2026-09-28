@@ -1327,22 +1327,46 @@ cmd_hotspot_start_vif() {
     cmd_hotspot_status
 }
 
-cmd_hotspot_repeater() {
+repeater_active_guard() {
+    requested_band=$1
+    [ ! -f "$HOTSPOT_MARKER" ] && return 0
+
+    active=$(cat "$HOTSPOT_MARKER" 2>/dev/null || true)
+    case "$active" in
+        repeater-2g:*)
+            if [ "$requested_band" = 5g ]; then
+                echo "A 2.4 GHz repeater is already active. Stop it before starting the 5 GHz repeater."
+            else
+                echo "The 2.4 GHz repeater is already active."
+            fi
+            ;;
+        repeater-5g:*)
+            if [ "$requested_band" = 2g ]; then
+                echo "A 5 GHz repeater is already active. Stop it before starting the 2.4 GHz repeater."
+            else
+                echo "The 5 GHz repeater is already active."
+            fi
+            ;;
+        *)
+            echo "A hotspot is already active. Stop it first: wifi hotspot stop"
+            ;;
+    esac
+    return 1
+}
+
+cmd_hotspot_repeater_band() {
+    desired_band=$1
+    shift
+
     resolve_hotspot_request "$@" || {
-        [ "$#" -eq 1 ] && echo 'usage: wifi hotspot repeater ["SSID" "PASSWORD" [CHANNEL]]'
+        echo 'usage: wifi hotspot repeater-2g|repeater-5g ["SSID" "PASSWORD" [CHANNEL]]'
         return 2
     }
 
     require_repeater_payload
-    [ ! -f "$HOTSPOT_MARKER" ] || {
-        echo "A hotspot is already active. Stop it first: wifi hotspot stop"
-        return 1
-    }
-
+    repeater_active_guard "$desired_band" || return 1
     prepare || return 1
 
-    requested_channel=$HOTSPOT_REQUEST_CHANNEL
-    channel=$requested_channel
     sta_state=""
     if [ -S "$CTRL/$IFACE" ]; then
         sta_state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
@@ -1350,21 +1374,41 @@ cmd_hotspot_repeater() {
     fi
 
     if [ "$sta_state" != COMPLETED ]; then
-        echo "Repeater mode requires $IFACE to be connected to an upstream Wi-Fi network first."
+        echo "Repeater mode requires $IFACE to be connected to upstream Wi-Fi first."
         echo 'Connect first with: wifi connect "SSID" "PASSWORD"'
         return 1
     fi
 
-    if [ "$sta_state" = COMPLETED ]; then
-        sta_channel=$(current_sta_channel 2>/dev/null || true)
-        if [ -z "$sta_channel" ]; then
-            echo "STA is connected outside supported 2.4 GHz channels 1-11."
-            return 1
-        fi
-        if [ "$requested_channel" != "$sta_channel" ]; then
-            echo "PRONTO STA+AP is single-channel; forcing AP channel $sta_channel."
-        fi
-        channel=$sta_channel
+    if ! load_sta_radio_info; then
+        echo "Could not map the current STA frequency to a supported 2.4/5 GHz AP channel."
+        return 1
+    fi
+
+    if [ "$desired_band" != auto ] && [ "$STA_BAND" != "$desired_band" ]; then
+        case "$STA_BAND" in
+            2g)
+                echo "$IFACE is currently connected to 2.4 GHz (${STA_FREQ} MHz, channel $STA_CHANNEL)."
+                echo "PRONTO STA+AP is single-channel, so repeater-5g cannot run on this upstream."
+                echo "Connect $IFACE to a 5 GHz upstream first, or use: wifi hotspot repeater-2g"
+                ;;
+            5g)
+                echo "$IFACE is currently connected to 5 GHz (${STA_FREQ} MHz, channel $STA_CHANNEL)."
+                echo "PRONTO STA+AP is single-channel, so repeater-2g cannot run on this upstream."
+                echo "Connect $IFACE to a 2.4 GHz upstream first, or use: wifi hotspot repeater-5g"
+                ;;
+        esac
+        return 1
+    fi
+
+    channel=$STA_CHANNEL
+    case "$STA_BAND" in
+        2g) band_label='2.4 GHz' ;;
+        5g) band_label='5 GHz' ;;
+    esac
+
+    requested_channel=$HOTSPOT_REQUEST_CHANNEL
+    if [ "$requested_channel" != "$channel" ]; then
+        echo "PRONTO STA+AP is single-channel; forcing repeater to $band_label channel $channel."
     fi
 
     make_hotspot_conf "$HOTSPOT_REQUEST_SSID" "$HOTSPOT_REQUEST_PASS" "$channel" "$HOTSPOT_CONF" || return 1
@@ -1409,13 +1453,25 @@ cmd_hotspot_repeater() {
         return 1
     fi
 
-    printf 'repeater:%s\n' "$HOTSPOT_IFACE" > "$HOTSPOT_MARKER"
+    printf 'repeater-%s:%s\n' "$STA_BAND" "$HOTSPOT_IFACE" > "$HOTSPOT_MARKER"
     "$BB" chmod 600 "$HOTSPOT_MARKER" 2>/dev/null || true
 
-    echo "Wi-Fi repeater ready: $HOTSPOT_IFACE -> $IFACE."
-    echo "Hotspot: $HOTSPOT_ADDR/24 (channel $channel)."
+    echo "Wi-Fi $band_label repeater ready: $HOTSPOT_IFACE -> $IFACE."
+    echo "Hotspot: $HOTSPOT_ADDR/24 (channel $channel, ${STA_FREQ} MHz)."
     echo "Internet sharing: IPv4 forwarding + MASQUERADE enabled."
     cmd_hotspot_status
+}
+
+cmd_hotspot_repeater() {
+    cmd_hotspot_repeater_band auto "$@"
+}
+
+cmd_hotspot_repeater_2g() {
+    cmd_hotspot_repeater_band 2g "$@"
+}
+
+cmd_hotspot_repeater_5g() {
+    cmd_hotspot_repeater_band 5g "$@"
 }
 
 cmd_hotspot_status() {
