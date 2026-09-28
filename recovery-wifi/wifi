@@ -17,6 +17,7 @@ WPA=/sbin/wpa_supplicant.albus
 WPACLI=/sbin/wpa_cli.albus
 HOSTAPD=/sbin/hostapd.albus
 IW=/sbin/iw.albus
+IPTABLES=/sbin/iptables.albus
 WCNSS=/sbin/wcnss-recovery-albus
 UDHCPC_SCRIPT=/sbin/wifi-udhcpc.script
 
@@ -42,8 +43,13 @@ HOTSPOT_DHCP=$STATE/udhcpd.conf
 HOTSPOT_LEASES=$STATE/udhcpd.leases
 HOTSPOT_PID=$STATE/udhcpd.pid
 HOTSPOT_DHCP_LOG=$STATE/udhcpd.log
+HOTSPOT_NAT_MARKER=$STATE/hotspot.nat
+HOTSPOT_IP_FORWARD_SAVED=$STATE/ip_forward.saved
+HOTSPOT_FORWARD_CHAIN=ALBUS_HOTSPOT_FWD
+HOTSPOT_NAT_CHAIN=ALBUS_HOTSPOT_NAT
 HOTSPOT_ADDR=192.168.43.1
 HOTSPOT_CIDR=192.168.43.1/24
+HOTSPOT_SUBNET=192.168.43.0/24
 IFACE=${WIFI_IFACE:-wlan0}
 HOTSPOT_IFACE=${WIFI_HOTSPOT_IFACE:-ap0}
 
@@ -99,7 +105,7 @@ require_payload() {
 
 require_hotspot_payload() {
     require_payload
-    for f in "$HOSTAPD" "$IW"; do
+    for f in "$HOSTAPD" "$IW" "$IPTABLES"; do
         [ -x "$f" ] || die "missing recovery hotspot payload: $f"
     done
 }
@@ -569,6 +575,95 @@ stop_hostapd() {
     "$BB" rm -rf "$HOTSPOT_CTRL" 2>/dev/null || true
 }
 
+clear_hotspot_nat() {
+    if [ -x "$IPTABLES" ]; then
+        "$IPTABLES" -D FORWARD -j "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
+        "$IPTABLES" -F "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
+        "$IPTABLES" -X "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
+
+        "$IPTABLES" -t nat -D POSTROUTING -j "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
+        "$IPTABLES" -t nat -F "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
+        "$IPTABLES" -t nat -X "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
+    fi
+
+    if [ -f "$HOTSPOT_IP_FORWARD_SAVED" ] &&
+       [ -w /proc/sys/net/ipv4/ip_forward ]; then
+        saved_forward=$(cat "$HOTSPOT_IP_FORWARD_SAVED" 2>/dev/null || true)
+        case "$saved_forward" in
+            0|1) printf '%s\n' "$saved_forward" > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true ;;
+        esac
+    fi
+
+    "$BB" rm -f "$HOTSPOT_NAT_MARKER" "$HOTSPOT_IP_FORWARD_SAVED" 2>/dev/null || true
+}
+
+enable_hotspot_nat() {
+    [ -x "$IPTABLES" ] || {
+        echo "Missing static iptables payload: $IPTABLES" >&2
+        return 1
+    }
+
+    [ -w /proc/sys/net/ipv4/ip_forward ] || {
+        echo "IPv4 forwarding control is unavailable." >&2
+        return 1
+    }
+
+    "$BB" ip route show default 2>/dev/null | "$BB" grep -q " dev $IFACE" || {
+        echo "No default route exists through $IFACE; cannot share internet." >&2
+        return 1
+    }
+
+    cat /proc/sys/net/ipv4/ip_forward > "$HOTSPOT_IP_FORWARD_SAVED" || return 1
+    printf '%s\n' 1 > /proc/sys/net/ipv4/ip_forward || return 1
+
+    # Remove only our own stale chains/jumps. Never flush DroidSpaces or any
+    # pre-existing recovery firewall state.
+    "$IPTABLES" -D FORWARD -j "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
+    "$IPTABLES" -F "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
+    "$IPTABLES" -X "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
+    "$IPTABLES" -t nat -D POSTROUTING -j "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
+    "$IPTABLES" -t nat -F "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
+    "$IPTABLES" -t nat -X "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
+
+    "$IPTABLES" -N "$HOTSPOT_FORWARD_CHAIN" || {
+        clear_hotspot_nat
+        return 1
+    }
+    "$IPTABLES" -A "$HOTSPOT_FORWARD_CHAIN"         -i "$HOTSPOT_IFACE" -o "$IFACE" -s "$HOTSPOT_SUBNET" -j ACCEPT || {
+        clear_hotspot_nat
+        return 1
+    }
+    "$IPTABLES" -A "$HOTSPOT_FORWARD_CHAIN"         -i "$IFACE" -o "$HOTSPOT_IFACE" -d "$HOTSPOT_SUBNET"         -m state --state ESTABLISHED,RELATED -j ACCEPT || {
+        clear_hotspot_nat
+        return 1
+    }
+    "$IPTABLES" -I FORWARD 1 -j "$HOTSPOT_FORWARD_CHAIN" || {
+        clear_hotspot_nat
+        return 1
+    }
+
+    "$IPTABLES" -t nat -N "$HOTSPOT_NAT_CHAIN" || {
+        clear_hotspot_nat
+        return 1
+    }
+    "$IPTABLES" -t nat -A "$HOTSPOT_NAT_CHAIN"         -s "$HOTSPOT_SUBNET" -o "$IFACE" -j MASQUERADE || {
+        clear_hotspot_nat
+        return 1
+    }
+    "$IPTABLES" -t nat -I POSTROUTING 1 -j "$HOTSPOT_NAT_CHAIN" || {
+        clear_hotspot_nat
+        return 1
+    }
+
+    {
+        printf 'upstream=%s\n' "$IFACE"
+        printf 'downstream=%s\n' "$HOTSPOT_IFACE"
+        printf 'subnet=%s\n' "$HOTSPOT_SUBNET"
+    } > "$HOTSPOT_NAT_MARKER"
+    "$BB" chmod 600 "$HOTSPOT_NAT_MARKER" 2>/dev/null || true
+    return 0
+}
+
 hotspot_active_iface() {
     if [ -f "$HOTSPOT_MARKER" ]; then
         active=$(cat "$HOTSPOT_MARKER" 2>/dev/null || true)
@@ -587,6 +682,7 @@ hotspot_active_iface() {
 
 clear_hotspot_state() {
     active_iface=$(hotspot_active_iface)
+    clear_hotspot_nat
     stop_udhcpd
     stop_hostapd
     "$BB" ip addr flush dev "$active_iface" 2>/dev/null || true
@@ -632,6 +728,9 @@ start_udhcpd() {
     : > "$HOTSPOT_LEASES"
     : > "$HOTSPOT_DHCP_LOG"
 
+    hotspot_dns=$("$BB" awk '/^nameserver[[:space:]]+/ { print $2; exit }' /etc/resolv.conf 2>/dev/null || true)
+    [ -n "$hotspot_dns" ] || hotspot_dns=8.8.8.8
+
     {
         printf '%s\n' 'start 192.168.43.20'
         printf '%s\n' 'end 192.168.43.60'
@@ -639,6 +738,7 @@ start_udhcpd() {
         printf '%s\n' 'max_leases 41'
         printf '%s\n' 'opt subnet 255.255.255.0'
         printf '%s\n' 'opt router 192.168.43.1'
+        printf 'opt dns %s\n' "$hotspot_dns"
         printf '%s\n' 'opt lease 86400'
         printf 'lease_file %s\n' "$HOTSPOT_LEASES"
         printf 'pidfile %s\n' "$HOTSPOT_PID"
@@ -728,6 +828,12 @@ cmd_hotspot_start_vif() {
             "$BB" sed -n 's/^wpa_state=//p')
     fi
 
+    if [ "$sta_state" != COMPLETED ]; then
+        echo "Repeater mode requires $IFACE to be connected to an upstream Wi-Fi network first."
+        echo 'Connect first with: wifi connect "SSID" "PASSWORD"'
+        return 1
+    fi
+
     if [ "$sta_state" = COMPLETED ]; then
         sta_channel=$(current_sta_channel 2>/dev/null || true)
         if [ -z "$sta_channel" ]; then
@@ -776,13 +882,18 @@ cmd_hotspot_start_vif() {
         return 1
     fi
 
+    if ! enable_hotspot_nat; then
+        echo "AP+STA came up, but internet sharing/NAT failed."
+        cleanup_hotspot_failure
+        return 1
+    fi
+
     printf 'vif:%s\n' "$HOTSPOT_IFACE" > "$HOTSPOT_MARKER"
     "$BB" chmod 600 "$HOTSPOT_MARKER" 2>/dev/null || true
 
     echo "Hotspot ready on $HOTSPOT_IFACE: $HOTSPOT_ADDR/24 (channel $channel)."
-    [ "$sta_state" = COMPLETED ] &&
-        echo "wlan0 STA remained connected; AP+STA concurrency is active."
-    echo "Internet/NAT sharing is not enabled in this first hardware-validation stage."
+    echo "$IFACE STA remained connected; AP+STA concurrency is active."
+    echo "Internet sharing: $HOTSPOT_IFACE -> $IFACE via IPv4 NAT/MASQUERADE."
     cmd_hotspot_status
 }
 
@@ -821,6 +932,15 @@ cmd_hotspot_status() {
                 echo "udhcpd: stopped (stale pid=$pid)"
             ;;
     esac
+
+    echo "--- internet sharing ---"
+    if [ -f "$HOTSPOT_NAT_MARKER" ]; then
+        echo "NAT: enabled ($HOTSPOT_IFACE -> $IFACE)"
+        echo "ip_forward: $(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo unknown)"
+        "$BB" ip route show default 2>/dev/null || true
+    else
+        echo "NAT: disabled"
+    fi
 }
 
 cmd_hotspot_clients() {
@@ -1079,7 +1199,7 @@ Recovery Wi-Fi (Motorola albus)
   wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE
   wifi connect-open "SSID"
   wifi hotspot probe-vif
-  wifi hotspot start-vif "SSID" "PASSWORD" [CHANNEL]
+  wifi hotspot start-vif "SSID" "PASSWORD" [CHANNEL]  # AP+STA repeater with internet/NAT
   wifi hotspot status
   wifi hotspot clients
   wifi hotspot stop
