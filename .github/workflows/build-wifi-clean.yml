@@ -1,4 +1,4 @@
-name: Build recovery (Clean Wi-Fi)
+name: Build recovery (Albus Wi-Fi Client)
 
 on:
   workflow_dispatch:
@@ -26,20 +26,28 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes \
+            autoconf \
+            automake \
             bc \
+            binutils-aarch64-linux-gnu \
             bison \
             build-essential \
             curl \
+            file \
             flex \
+            gcc-aarch64-linux-gnu \
             git \
             libelf-dev \
             libssl-dev \
+            libtool \
             lzma \
+            perl \
+            pkg-config \
             python-is-python3 \
             unzip \
             xz-utils
 
-      - name: Build verified bare recovery + clean Albus Wi-Fi overlay
+      - name: Build verified bare recovery + complete Albus Wi-Fi client
         run: bash scripts/build-wifi-clean.sh
 
       - name: Upload to GoFile
@@ -55,6 +63,6 @@ jobs:
       - name: Upload recovery
         uses: actions/upload-artifact@v4
         with:
-          name: recovery-albus-wifi-clean
+          name: recovery-albus-wifi-client
           path: artifacts/*
           if-no-files-found: error
