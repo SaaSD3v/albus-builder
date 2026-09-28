@@ -57,6 +57,7 @@ def build_overlay(args):
         ("sbin/iptables-save", b"iptables.albus", stat.S_IFLNK | 0o777),
         ("sbin/iptables-restore", b"iptables.albus", stat.S_IFLNK | 0o777),
         ("sbin/wifi-udhcpc.script", args.udhcpc_script.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/recovery-time-sync-albus", args.time_sync.read_bytes(), stat.S_IFREG | 0o755),
     ]
 
     raw = bytearray()
@@ -97,6 +98,7 @@ def build_overlay(args):
         b"sbin/iptables-save\0",
         b"sbin/iptables-restore\0",
         b"sbin/wifi-udhcpc.script\0",
+        b"sbin/recovery-time-sync-albus\0",
     )
     for marker in required:
         if marker not in check:
@@ -134,6 +136,7 @@ def verify_combined(base: Path, combined: Path):
         b"sbin/iptables-save\0",
         b"sbin/iptables-restore\0",
         b"sbin/wifi-udhcpc.script\0",
+        b"sbin/recovery-time-sync-albus\0",
         b"TRAILER!!!\0",
     )
     for marker in required:
@@ -159,6 +162,7 @@ def main():
     b.add_argument("--busybox", type=Path, required=True)
     b.add_argument("--iptables", type=Path, required=True)
     b.add_argument("--udhcpc-script", type=Path, required=True)
+    b.add_argument("--time-sync", type=Path, required=True)
     b.add_argument("--output", type=Path, required=True)
 
     v = sub.add_parser("verify")
