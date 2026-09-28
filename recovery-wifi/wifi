@@ -1102,6 +1102,20 @@ hotspot_active_iface() {
                     return 0
                 }
                 ;;
+            repeater-2g:*)
+                active=${active#repeater-2g:}
+                [ -n "$active" ] && {
+                    printf '%s\n' "$active"
+                    return 0
+                }
+                ;;
+            repeater-5g:*)
+                active=${active#repeater-5g:}
+                [ -n "$active" ] && {
+                    printf '%s\n' "$active"
+                    return 0
+                }
+                ;;
         esac
     fi
     printf '%s\n' "$HOTSPOT_IFACE"
