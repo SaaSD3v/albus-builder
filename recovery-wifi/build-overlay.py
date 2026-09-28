@@ -114,7 +114,7 @@ def verify_combined(base: Path, combined: Path):
         b"sbin/wpa_supplicant.albus\0",
         b"sbin/wpa_cli.albus\0",
         b"sbin/wcnss-recovery-albus\0",
-        b"sbin/busybox.albus\0"
+        b"sbin/busybox.albus\0",
         b"sbin/wifi-udhcpc.script\0",
         b"TRAILER!!!\0",
     )
