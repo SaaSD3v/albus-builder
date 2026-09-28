@@ -1,0 +1,358 @@
+#!/sbin/sh
+# RCTools - headless recovery control frontend for Motorola Albus.
+# Same user-facing CLI as Channel. No dependency on the TWRP recovery service.
+
+PATH=/sbin:/system/bin:/vendor/bin
+export PATH
+
+BB=/sbin/busybox.albus
+WIFI=/sbin/wifi
+TIMESYNC=/sbin/recovery-time-sync-albus
+BYNAME=/dev/block/bootdevice/by-name
+MOUNT_TIMEOUT=${RCTOOLS_MOUNT_TIMEOUT:-8}
+
+say() { printf '%s\n' "$*"; }
+err() { printf 'rctools: %s\n' "$*" >&2; }
+
+active_slot() {
+    s=$(getprop ro.boot.slot_suffix 2>/dev/null || true)
+    case "$s" in
+        _a|_b) printf '%s\n' "$s"; return 0 ;;
+    esac
+    s=$(getprop ro.boot.slot 2>/dev/null || true)
+    case "$s" in
+        a|b) printf '_%s\n' "$s"; return 0 ;;
+    esac
+    return 1
+}
+
+normalize_slot() {
+    case "${1:-active}" in
+        active|current|"") active_slot || true ;;
+        a|_a) printf '%s\n' '_a' ;;
+        b|_b) printf '%s\n' '_b' ;;
+        none|noslot) printf '%s\n' '' ;;
+        *) return 1 ;;
+    esac
+}
+
+is_slot_partition() {
+    case "$1" in
+        aboot|boot|cmnlib|cmnlib64|devcfg|dsp|dtbo|fsg|keymaster|logo|modem|oem|prov|rpm|sbl1|system|tz|vbmeta|vendor)
+            return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+find_byname_root() {
+    for root in \
+        /dev/block/bootdevice/by-name \
+        /dev/block/platform/soc/7824900.sdhci/by-name \
+        /dev/block/platform/soc/c0c4000.sdhci/by-name
+    do
+        [ -d "$root" ] && { printf '%s\n' "$root"; return 0; }
+    done
+    return 1
+}
+
+resolve_block() {
+    part="$1"
+    slot_arg="${2:-active}"
+    root=$(find_byname_root) || return 1
+
+    case "$part" in
+        *_a|*_b)
+            [ -e "$root/$part" ] && { printf '%s\n' "$root/$part"; return 0; }
+            return 1 ;;
+    esac
+
+    slot=$(normalize_slot "$slot_arg") || return 1
+
+    if is_slot_partition "$part"; then
+        if [ -n "$slot" ] && [ -e "$root/${part}${slot}" ]; then
+            printf '%s\n' "$root/${part}${slot}"
+            return 0
+        fi
+        case "$slot_arg" in
+            a|_a|b|_b) return 1 ;;
+        esac
+    fi
+
+    [ -e "$root/$part" ] && { printf '%s\n' "$root/$part"; return 0; }
+    return 1
+}
+
+logical_part_name() {
+    case "$1" in
+        data) printf '%s\n' userdata ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+mount_target() {
+    logical="$1"
+    slot_arg="${2:-active}"
+    case "$logical" in
+        data|userdata) printf '%s\n' /data ;;
+        system|vendor|oem)
+            case "$slot_arg" in
+                a|_a) printf '/mnt/%s_a\n' "$logical" ;;
+                b|_b) printf '/mnt/%s_b\n' "$logical" ;;
+                *) printf '/mnt/%s\n' "$logical" ;;
+            esac ;;
+        system_a|vendor_a|oem_a|system_b|vendor_b|oem_b) printf '/mnt/%s\n' "$logical" ;;
+        persist) printf '%s\n' /mnt/persist ;;
+        persist2) printf '%s\n' /mnt/persist2 ;;
+        carrier) printf '%s\n' /mnt/carrier ;;
+        metadata) printf '%s\n' /mnt/metadata ;;
+        logs) printf '%s\n' /mnt/logs ;;
+        *)
+            case "$slot_arg" in
+                a|_a) printf '/mnt/%s_a\n' "$logical" ;;
+                b|_b) printf '/mnt/%s_b\n' "$logical" ;;
+                *) printf '/mnt/%s\n' "$logical" ;;
+            esac ;;
+    esac
+}
+
+mounted_at() {
+    "$BB" awk -v m="$1" '$2 == m {f=1} END {exit f?0:1}' /proc/mounts 2>/dev/null
+}
+
+mount_one() {
+    logical="$1"
+    slot_arg="${2:-active}"
+    mode="${3:-rw}"
+    case "$mode" in ro|rw) ;; *) err "mount mode must be ro or rw"; return 2 ;; esac
+
+    part=$(logical_part_name "$logical")
+    case "$logical" in
+        *_a) part=${logical%_a}; slot_arg=a ;;
+        *_b) part=${logical%_b}; slot_arg=b ;;
+    esac
+
+    dev=$(resolve_block "$part" "$slot_arg") || {
+        err "partition not found: $logical (slot=$slot_arg)"
+        return 1
+    }
+    target=$(mount_target "$logical" "$slot_arg")
+
+    if mounted_at "$target"; then
+        # Upgrade an existing RO mount when RW was requested.
+        if [ "$mode" = rw ] && "$BB" grep " $target " /proc/mounts | "$BB" grep -q '(ro[,)]'; then
+            "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -o remount,rw "$target" 2>/dev/null || true
+        fi
+        say "$target is already mounted"
+        "$BB" grep " $target " /proc/mounts 2>/dev/null || true
+        return 0
+    fi
+
+    "$BB" mkdir -p "$target" || return 1
+
+    "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -o "$mode" "$dev" "$target" 2>/dev/null || \
+    "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -t ext4 -o "$mode" "$dev" "$target" 2>/dev/null || \
+    "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -t f2fs -o "$mode" "$dev" "$target" 2>/dev/null || \
+    "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -t vfat -o "$mode" "$dev" "$target" 2>/dev/null || {
+        err "could not mount $dev at $target as auto/ext4/f2fs/vfat"
+        err "use: rctools block $logical $slot_arg"
+        return 1
+    }
+
+    say "mounted: $logical"
+    say "block:   $dev"
+    say "target:  $target"
+    "$BB" grep " $target " /proc/mounts 2>/dev/null || true
+}
+
+umount_one() {
+    logical="$1"
+    slot_arg="${2:-active}"
+    target=$(mount_target "$logical" "$slot_arg")
+    if ! mounted_at "$target"; then
+        say "$target is not mounted"
+        return 0
+    fi
+    "$BB" timeout "$MOUNT_TIMEOUT" "$BB" umount "$target" || return 1
+    say "unmounted: $target"
+}
+
+mount_slot_group() {
+    slot_arg="$1"; item="$2"; mode="${3:-rw}"
+    case "$slot_arg" in a|b|active) ;; *) err "slot must be a, b or active"; return 2 ;; esac
+    case "$item" in
+        all)
+            rc=0
+            for p in system vendor oem; do mount_one "$p" "$slot_arg" "$mode" || rc=1; echo; done
+            return "$rc" ;;
+        system|vendor|oem) mount_one "$item" "$slot_arg" "$mode" ;;
+        *) err "slot mounts support: system, vendor, oem or all"; return 2 ;;
+    esac
+}
+
+mount_common_group() {
+    mode="${1:-rw}"; rc=0
+    for p in data persist persist2; do
+        resolve_block "$(logical_part_name "$p")" none >/dev/null 2>&1 || continue
+        mount_one "$p" none "$mode" || rc=1
+        echo
+    done
+    return "$rc"
+}
+
+show_mounts() {
+    printf '%s\n' '--- RCTools mounts ---'
+    "$BB" awk '$2=="/data" || $2 ~ /^\/mnt\/(system|vendor|oem|persist|persist2|carrier|metadata|logs)/ {print}' /proc/mounts
+}
+
+show_partitions() {
+    root=$(find_byname_root) || { err "by-name directory not found"; return 1; }
+    printf 'by-name: %s\n' "$root"
+    "$BB" ls -l "$root" 2>/dev/null
+}
+
+show_slot() {
+    s=$(active_slot 2>/dev/null || true)
+    if [ -n "$s" ]; then say "active slot: $s"; else say "active slot: none/legacy"; fi
+}
+
+show_block() {
+    [ "$#" -ge 1 ] || { err "usage: rctools block NAME [a|b|active|none]"; return 2; }
+    logical="$1"; slot_arg="${2:-active}"
+    part=$(logical_part_name "$logical")
+    case "$logical" in *_a) part=${logical%_a}; slot_arg=a ;; *_b) part=${logical%_b}; slot_arg=b ;; esac
+    dev=$(resolve_block "$part" "$slot_arg") || { err "partition not found: $logical (slot=$slot_arg)"; return 1; }
+    printf '%s\n' "$dev"
+    "$BB" ls -l "$dev" 2>/dev/null || true
+}
+
+show_info() {
+    say "RCTools - Motorola Albus CLI recovery"
+    show_slot
+    echo
+    show_mounts
+    echo
+    [ -x "$WIFI" ] && "$WIFI" status 2>/dev/null || say "Wi-Fi backend: missing"
+}
+
+help_main() {
+cat <<'EOF'
+RCTools - Motorola Albus CLI recovery
+
+rctools help
+  Show this complete command reference.
+
+rctools info
+  Show active slot, useful mounts and current Wi-Fi state.
+
+rctools slot
+  Show current A/B slot, or legacy/no-slot on non-A/B Albus layouts.
+
+rctools partitions
+  List every /dev/block/.../by-name partition and symlink.
+
+rctools block NAME [a|b|active|none]
+  Resolve a raw block device without mounting it.
+
+rctools mount a system|vendor|oem|all [rw|ro]
+rctools mount b system|vendor|oem|all [rw|ro]
+rctools mount active system|vendor|oem|all [rw|ro]
+  Same slot-aware interface used by Channel.
+  On a legacy/no-slot Albus, "active" falls back to the unsuffixed partition.
+
+rctools mount data [rw|ro]
+rctools mount persist [rw|ro]
+rctools mount persist2 [rw|ro]
+  Mount common non-slot partitions directly. Default mode is RW.
+
+rctools mount common [rw|ro]
+  Mount data + persist (+ persist2 when present).
+
+rctools umount a|b|active system|vendor|oem
+rctools umount data|persist|persist2
+  Unmount one RCTools mountpoint.
+
+rctools mounts
+  Show useful recovery/RCTools mounts.
+
+rctools wifi up
+rctools wifi scan
+rctools wifi connect "SSID" "PASSWORD"
+rctools wifi networks
+rctools wifi forget "SSID"
+  Forward directly to the Albus recovery Wi-Fi backend.
+
+rctools hotspot create "SSID" "PASSWORD" [CHANNEL]
+rctools hotspot repeater ["SSID" "PASSWORD" [CHANNEL]]
+rctools hotspot repeater-2g ["SSID" "PASSWORD" [CHANNEL]]
+rctools hotspot repeater-5g ["SSID" "PASSWORD" [CHANNEL]]
+rctools hotspot status
+rctools hotspot stop
+  Same hotspot/repeater command names as Channel.
+
+rctools time status
+rctools time sync
+rctools time restore
+  Recovery clock helper backed by /data/local/wifi/.last-good-epoch.
+
+Compatibility backend remains available as /sbin/wifi.
+RCTools is the intended user-facing CLI; no TWRP recovery service is required.
+EOF
+}
+
+[ -x "$BB" ] || { err "missing BusyBox backend: $BB"; exit 1; }
+
+cmd="${1:-help}"
+[ "$#" -gt 0 ] && shift || true
+case "$cmd" in
+    help|h|-h|--help) help_main ;;
+    info) show_info ;;
+    slot) show_slot ;;
+    partitions) show_partitions ;;
+    block) show_block "$@" ;;
+    mount)
+        sub="${1:-}"; [ "$#" -gt 0 ] && shift || true
+        case "$sub" in
+            a|b|active)
+                [ "$#" -ge 1 ] || { err "usage: rctools mount $sub system|vendor|oem|all [rw|ro]"; exit 2; }
+                item="$1"; shift
+                mount_slot_group "$sub" "$item" "${1:-rw}" ;;
+            data|userdata|persist|persist2|carrier|metadata|logs)
+                mount_one "$sub" none "${1:-rw}" ;;
+            common) mount_common_group "${1:-rw}" ;;
+            "")
+                err "usage: rctools mount {a|b|active} system|vendor|oem|all [rw|ro]"
+                err "   or: rctools mount data|persist|persist2 [rw|ro]"
+                exit 2 ;;
+            *) mount_one "$sub" "${1:-active}" "${2:-rw}" ;;
+        esac ;;
+    umount|unmount)
+        sub="${1:-}"; [ "$#" -gt 0 ] && shift || true
+        case "$sub" in
+            a|b|active)
+                [ "$#" -ge 1 ] || { err "usage: rctools umount $sub system|vendor|oem"; exit 2; }
+                item="$1"
+                case "$item" in system|vendor|oem) umount_one "$item" "$sub" ;; *) err "slot unmount supports system, vendor or oem"; exit 2 ;; esac ;;
+            data|userdata|persist|persist2|carrier|metadata|logs) umount_one "$sub" none ;;
+            *) err "usage: rctools umount {a|b|active} system|vendor|oem"; err "   or: rctools umount data|persist|persist2"; exit 2 ;;
+        esac ;;
+    mounts) show_mounts ;;
+    wifi)
+        [ -x "$WIFI" ] || { err "Wi-Fi backend missing: $WIFI"; exit 1; }
+        exec "$WIFI" "$@" ;;
+    hotspot)
+        [ -x "$WIFI" ] || { err "Wi-Fi backend missing: $WIFI"; exit 1; }
+        exec "$WIFI" hotspot "$@" ;;
+    time)
+        sub="${1:-status}"; [ "$#" -gt 0 ] && shift || true
+        case "$sub" in
+            status) exec "$TIMESYNC" status ;;
+            sync|online) exec "$TIMESYNC" online ;;
+            restore) exec "$TIMESYNC" restore ;;
+            *) err "usage: rctools time {status|sync|restore}"; exit 2 ;;
+        esac ;;
+    *)
+        err "unknown command: $cmd"
+        echo
+        help_main
+        exit 2 ;;
+esac
