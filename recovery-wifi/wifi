@@ -1,6 +1,7 @@
 #!/sbin/sh
-# Recovery Wi-Fi for Motorola albus (MSM8953).
-# Hardware bring-up sequence validated on-device in TWRP.
+# Recovery Wi-Fi controller for Motorola albus (Moto Z2 Play / MSM8953).
+# Client-mode architecture mirrors the validated Motorola channel flow while
+# retaining the Albus-specific WCNSS bring-up proven on-device.
 
 set -u
 umask 077
@@ -10,11 +11,20 @@ export PATH
 LC_ALL=C
 export LC_ALL
 
+BB=/sbin/busybox.albus
+WPA=/sbin/wpa_supplicant.albus
+WPACLI=/sbin/wpa_cli.albus
+WPAPASS=/sbin/wpa_passphrase.albus
+UDHCPC_SCRIPT=/sbin/wifi-udhcpc.script
+
 STATE=/tmp/albus-wifi
 MNT=$STATE/mnt
 FW=$STATE/firmware
-LOG=$STATE/wifi.log
+CTRL=$STATE/ctrl
+CONF=$STATE/wpa_supplicant.conf
+WPA_LOG=$STATE/wpa_supplicant.log
 WCNSS_LOG=$STATE/wcnss.log
+PREPLOG=$STATE/prepare.log
 IFACE=${WIFI_IFACE:-wlan0}
 
 VENDOR_BLOCK=/dev/block/bootdevice/by-name/oem
@@ -32,8 +42,20 @@ have() {
     command -v "$1" >/dev/null 2>&1
 }
 
-ensure_dir() {
-    [ -d "$1" ] || mkdir -p "$1" || die "could not create $1"
+require_payload() {
+    for f in "$BB" "$WPA" "$WPACLI" "$WPAPASS" "$UDHCPC_SCRIPT"; do
+        [ -x "$f" ] || die "missing client payload: $f"
+    done
+}
+
+mkdir_state() {
+    mkdir -p "$STATE" "$MNT" "$CTRL" "$FW/wlan/prima" 2>/dev/null || true
+    chmod 700 "$STATE" 2>/dev/null || true
+}
+
+log() {
+    mkdir_state
+    echo "[wifi] $*" | tee -a "$PREPLOG"
 }
 
 is_mounted() {
@@ -45,53 +67,29 @@ require_root() {
     [ "$uid" = 0 ] || die "run from a root recovery shell"
 }
 
-usage() {
-    cat <<'EOF'
-Albus recovery Wi-Fi
-  wifi help       show this help
-  wifi test       inspect Wi-Fi prerequisites without starting it
-  wifi prepare    stage Albus WCNSS/PRIMA firmware and carrier NV
-  wifi up         start WCNSS and bring wlan0 up
-  wifi status     show current WCNSS/WLAN state
-  wifi down       lower wlan0
-  wifi logs       show WCNSS and kernel Wi-Fi logs
-EOF
-}
-
-print_item() {
-    label=$1
-    path=$2
-    if [ -e "$path" ]; then
-        echo "OK   $label: $path"
-    else
-        echo "MISS $label: $path"
-    fi
-}
-
 vendor_root() {
     if [ -x /vendor/bin/wcnss_service ]; then
         printf '%s\n' /vendor
         return 0
     fi
 
-    ensure_dir "$MNT/vendor"
+    mkdir -p "$MNT/vendor" || return 1
     if ! is_mounted "$MNT/vendor"; then
-        [ -e "$VENDOR_BLOCK" ] || die "missing vendor/oem block"
+        [ -e "$VENDOR_BLOCK" ] || return 1
         mount -t ext4 -o ro,nosuid,nodev "$VENDOR_BLOCK" "$MNT/vendor" ||
-            die "could not mount Albus OEM/vendor"
+            return 1
     fi
 
-    [ -x "$MNT/vendor/bin/wcnss_service" ] ||
-        die "wcnss_service not found in Albus vendor"
+    [ -x "$MNT/vendor/bin/wcnss_service" ] || return 1
     printf '%s\n' "$MNT/vendor"
 }
 
 mount_modem() {
-    ensure_dir "$MNT/modem"
+    mkdir -p "$MNT/modem" || return 1
     if ! is_mounted "$MNT/modem"; then
-        [ -e "$MODEM_BLOCK" ] || die "missing modem block"
+        [ -e "$MODEM_BLOCK" ] || return 1
         mount -t ext4 -o ro,nosuid,nodev "$MODEM_BLOCK" "$MNT/modem" ||
-            die "could not mount Albus modem firmware"
+            return 1
     fi
 }
 
@@ -99,7 +97,7 @@ link_dir_contents() {
     srcdir=$1
     dstdir=$2
     [ -d "$srcdir" ] || return 0
-    ensure_dir "$dstdir"
+    mkdir -p "$dstdir" || return 1
 
     for src in "$srcdir"/*; do
         [ -e "$src" ] || continue
@@ -130,102 +128,13 @@ select_nv() {
         nv=WCNSS_qcom_wlan_nv.bin
     fi
 
-    [ -e "$FW/wlan/prima/$nv" ] ||
-        die "no usable WCNSS NV file found"
+    [ -e "$FW/wlan/prima/$nv" ] || return 1
 
     if [ "$nv" != WCNSS_qcom_wlan_nv.bin ]; then
-        ln -sf "$FW/wlan/prima/$nv"             "$FW/wlan/prima/WCNSS_qcom_wlan_nv.bin" ||
-            die "could not select regional WCNSS NV"
+        ln -sf "$FW/wlan/prima/$nv"             "$FW/wlan/prima/WCNSS_qcom_wlan_nv.bin" || return 1
     fi
 
     printf '%s\n' "$nv"
-}
-
-cmd_test() {
-    echo "Albus Wi-Fi prerequisite test"
-    print_item "vendor/oem block" "$VENDOR_BLOCK"
-    print_item "modem block" "$MODEM_BLOCK"
-    print_item "wcnss_ctrl" /dev/wcnss_ctrl
-    print_item "wcnss_wlan" /dev/wcnss_wlan
-    print_item "firmware_class.path" "$FIRMWARE_PATH_NODE"
-    print_item "wlan fwpath" "$FWPATH_NODE"
-
-    echo
-    echo "Visible stock payload:"
-    if [ -x /vendor/bin/wcnss_service ]; then
-        print_item "wcnss_service" /vendor/bin/wcnss_service
-        print_item "WCNSS cfg" /vendor/firmware/wlan/prima/WCNSS_qcom_cfg.ini
-        print_item "Brazil NV" /vendor/firmware/wlan/prima/WCNSS_qcom_wlan_nv_Brazil.bin
-    else
-        echo "vendor not mounted; wifi prepare will mount OEM privately"
-    fi
-
-    echo
-    echo "Interfaces:"
-    ls -1 /sys/class/net 2>/dev/null || true
-}
-
-cmd_prepare() {
-    require_root
-
-    rm -rf "$STATE"
-    ensure_dir "$MNT/modem"
-    ensure_dir "$MNT/vendor"
-    ensure_dir "$FW/wlan/prima"
-    : > "$LOG"
-
-    VROOT=$(vendor_root)
-    mount_modem
-
-    [ -d "$MNT/modem/image" ] ||
-        die "modem image directory is missing"
-
-    link_dir_contents "$MNT/modem/image" "$FW" ||
-        die "could not stage modem firmware"
-    link_dir_contents "$VROOT/firmware/wlan/prima" "$FW/wlan/prima" ||
-        die "could not stage PRIMA firmware"
-
-    if [ -d "$VROOT/etc/wifi" ]; then
-        for src in "$VROOT/etc/wifi"/WCNSS_qcom_wlan_nv*.bin; do
-            [ -e "$src" ] || continue
-            base=${src##*/}
-            ln -sf "$src" "$FW/wlan/prima/$base" ||
-                die "could not stage $base"
-        done
-    fi
-
-    if [ ! -e "$FW/wlan/prima/WCNSS_qcom_cfg.ini" ] &&
-       [ -s /sbin/albus-WCNSS_qcom_cfg.ini ]; then
-        cp /sbin/albus-WCNSS_qcom_cfg.ini             "$FW/wlan/prima/WCNSS_qcom_cfg.ini" ||
-            die "could not install WCNSS config fallback"
-    fi
-
-    [ -e "$FW/wcnss.mdt" ] ||
-        die "wcnss.mdt not found"
-    [ -e "$FW/wlan/prima/WCNSS_qcom_cfg.ini" ] ||
-        die "WCNSS_qcom_cfg.ini not found"
-    [ -e "$FW/wlan/prima/WCNSS_cfg.dat" ] ||
-        die "WCNSS_cfg.dat not found"
-
-    nv=$(select_nv)
-
-    [ -w "$FIRMWARE_PATH_NODE" ] ||
-        die "firmware_class.path is not writable"
-    printf '%s' "$FW" > "$FIRMWARE_PATH_NODE" ||
-        die "could not set firmware_class.path"
-
-    {
-        echo "vendor_root=$VROOT"
-        echo "modem_root=$MNT/modem"
-        echo "firmware_path=$FW"
-        echo "carrier=$(getprop ro.boot.carrier 2>/dev/null || true)"
-        echo "nv_file=$nv"
-    } >> "$LOG"
-
-    echo "Albus Wi-Fi firmware prepared."
-    echo "vendor: $VROOT"
-    echo "firmware: $FW"
-    echo "NV: $nv"
 }
 
 wcnss_running() {
@@ -233,81 +142,344 @@ wcnss_running() {
 }
 
 start_wcnss_service() {
-    VROOT=$(vendor_root)
+    VROOT=$1
     WCNSS_BIN=$VROOT/bin/wcnss_service
 
-    killall wcnss_service 2>/dev/null || true
+    if wcnss_running; then
+        log "wcnss_service already running"
+        return 0
+    fi
 
     ANDROID_ROOT=/system     LD_LIBRARY_PATH="$VROOT/lib64:$VROOT/lib:/system/lib64:/system/lib"     "$WCNSS_BIN" >"$WCNSS_LOG" 2>&1 &
 
-    WCNSSPID=$!
-    echo "wcnss_service pid=$WCNSSPID"
+    pid=$!
+    log "wcnss_service started pid=$pid"
     sleep 2
 
     if ! wcnss_running; then
-        echo "wifi: wcnss_service exited" >&2
+        log "wcnss_service exited"
         cat "$WCNSS_LOG" 2>/dev/null || true
         return 1
     fi
+}
 
+prepare() {
+    require_root
+    mkdir_state
+    : > "$PREPLOG"
+
+    # Albus fwpath is a userspace-triggered restart/init path. Never retrigger
+    # it once wlan0 exists; preserve the live PRONTO instance exactly as on
+    # Channel.
+    if [ -d "/sys/class/net/$IFACE" ]; then
+        if [ -x "$BB" ]; then
+            "$BB" ip link set "$IFACE" up 2>>"$PREPLOG" || true
+        else
+            ip link set "$IFACE" up 2>>"$PREPLOG" || true
+        fi
+        log "$IFACE already initialized; preserving running driver"
+        return 0
+    fi
+
+    VROOT=$(vendor_root) || {
+        log "Albus vendor/OEM unavailable"
+        return 1
+    }
+    log "vendor root=$VROOT"
+
+    mount_modem || {
+        log "modem firmware mount failed"
+        return 1
+    }
+    log "modem firmware mounted at $MNT/modem"
+
+    rm -rf "$FW"
+    mkdir -p "$FW/wlan/prima" || return 1
+
+    link_dir_contents "$MNT/modem/image" "$FW" || {
+        log "could not stage modem WCNSS firmware"
+        return 1
+    }
+
+    link_dir_contents "$VROOT/firmware/wlan/prima" "$FW/wlan/prima" || {
+        log "could not stage PRIMA firmware"
+        return 1
+    }
+
+    if [ -d "$VROOT/etc/wifi" ]; then
+        for src in "$VROOT/etc/wifi"/WCNSS_qcom_wlan_nv*.bin; do
+            [ -e "$src" ] || continue
+            base=${src##*/}
+            ln -sf "$src" "$FW/wlan/prima/$base" || return 1
+        done
+    fi
+
+    if [ ! -e "$FW/wlan/prima/WCNSS_qcom_cfg.ini" ] &&
+       [ -s /sbin/albus-WCNSS_qcom_cfg.ini ]; then
+        cp /sbin/albus-WCNSS_qcom_cfg.ini             "$FW/wlan/prima/WCNSS_qcom_cfg.ini" || return 1
+    fi
+
+    [ -e "$FW/wcnss.mdt" ] || {
+        log "wcnss.mdt missing"
+        return 1
+    }
+    [ -e "$FW/wlan/prima/WCNSS_qcom_cfg.ini" ] || {
+        log "WCNSS_qcom_cfg.ini missing"
+        return 1
+    }
+    [ -e "$FW/wlan/prima/WCNSS_cfg.dat" ] || {
+        log "WCNSS_cfg.dat missing"
+        return 1
+    }
+
+    nv=$(select_nv) || {
+        log "no usable WCNSS NV"
+        return 1
+    }
+    log "carrier=$(getprop ro.boot.carrier 2>/dev/null || true) nv=$nv"
+
+    [ -w "$FIRMWARE_PATH_NODE" ] || {
+        log "firmware_class.path is not writable"
+        return 1
+    }
+    printf '%s' "$FW" > "$FIRMWARE_PATH_NODE" || return 1
+    log "firmware_class.path=$FW"
+
+    [ -e /dev/wcnss_ctrl ] && [ -e /dev/wcnss_wlan ] || {
+        log "WCNSS character devices missing"
+        return 1
+    }
+
+    start_wcnss_service "$VROOT" || return 1
+
+    [ -w "$FWPATH_NODE" ] || {
+        log "wlan fwpath is not writable"
+        return 1
+    }
+
+    printf '%s' sta > "$FWPATH_NODE" || {
+        log "could not trigger PRONTO STA"
+        return 1
+    }
+    log "fwpath=sta requested"
+
+    i=0
+    while [ "$i" -lt 20 ]; do
+        [ -d "/sys/class/net/$IFACE" ] && break
+        sleep 1
+        i=$((i + 1))
+    done
+
+    [ -d "/sys/class/net/$IFACE" ] || {
+        log "$IFACE did not appear"
+        return 1
+    }
+
+    if [ -x "$BB" ]; then
+        "$BB" ip link set "$IFACE" up 2>>"$PREPLOG" || true
+    else
+        ip link set "$IFACE" up 2>>"$PREPLOG" || true
+    fi
+    log "$IFACE is present and enabled"
     return 0
 }
 
-cmd_up() {
-    require_root
-    cmd_prepare
-
-    start_wcnss_service ||
-        die "could not start wcnss_service"
-
-    [ -w "$FWPATH_NODE" ] ||
-        die "wlan fwpath is not writable"
-
-    printf '%s' sta > "$FWPATH_NODE" ||
-        die "could not trigger PRONTO WLAN"
-
-    count=0
-    while [ "$count" -lt 20 ]; do
-        [ -d "/sys/class/net/$IFACE" ] && break
-        sleep 1
-        count=$((count + 1))
-    done
-
-    [ -d "/sys/class/net/$IFACE" ] ||
-        die "wlan0 did not appear; run 'wifi logs'"
-
-    if have ip; then
-        ip link set "$IFACE" up 2>/dev/null ||
-            die "could not bring wlan0 up"
-        ip link show "$IFACE" 2>/dev/null || true
-    elif have ifconfig; then
-        ifconfig "$IFACE" up ||
-            die "could not bring wlan0 up"
-        ifconfig "$IFACE" 2>/dev/null || true
-    else
-        die "recovery has neither ip nor ifconfig"
+stop_supplicant() {
+    if [ -f "$STATE/wpa.pid" ]; then
+        pid=$(cat "$STATE/wpa.pid" 2>/dev/null || true)
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+        rm -f "$STATE/wpa.pid"
     fi
 
-    echo "Albus Wi-Fi interface $IFACE is ready."
+    [ -x "$BB" ] &&
+        "$BB" pkill -f '/sbin/wpa_supplicant.albus' 2>/dev/null || true
+    sleep 1
+}
+
+start_supplicant() {
+    require_payload
+
+    [ -f "$CONF" ] || {
+        cat > "$CONF" <<'EOF'
+ctrl_interface=/tmp/albus-wifi/ctrl
+update_config=1
+ap_scan=1
+EOF
+    }
+
+    stop_supplicant
+    rm -rf "$CTRL"
+    mkdir -p "$CTRL"
+    : > "$WPA_LOG"
+
+    "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D nl80211,wext         -c "$CONF" -C "$CTRL" -f "$WPA_LOG" || {
+        log "nl80211,wext supplicant startup failed; retrying wext"
+        "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D wext             -c "$CONF" -C "$CTRL" -f "$WPA_LOG"
+    }
+
+    i=0
+    while [ "$i" -lt 10 ] && [ ! -S "$CTRL/$IFACE" ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+
+    [ -S "$CTRL/$IFACE" ] || {
+        log "supplicant control socket did not appear"
+        return 1
+    }
+}
+
+wait_connected() {
+    i=0
+    while [ "$i" -lt 30 ]; do
+        state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+            "$BB" sed -n 's/^wpa_state=//p')
+        [ "$state" = COMPLETED ] && return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+do_dhcp() {
+    require_payload
+    "$BB" udhcpc -i "$IFACE" -s "$UDHCPC_SCRIPT"         -p "$STATE/udhcpc.pid" -t 8 -T 3 -A 1 -q
+}
+
+escape_wpa_string() {
+    printf '%s' "$1" | "$BB" sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+make_psk_conf() {
+    ssid=$1
+    pass=$2
+
+    {
+        echo 'ctrl_interface=/tmp/albus-wifi/ctrl'
+        echo 'update_config=1'
+        echo 'ap_scan=1'
+        "$WPAPASS" "$ssid" "$pass" | "$BB" sed '/^[[:space:]]*#psk=/d'
+    } > "$CONF"
+    chmod 600 "$CONF"
+}
+
+make_open_conf() {
+    ssid=$(escape_wpa_string "$1")
+    cat > "$CONF" <<EOF
+ctrl_interface=/tmp/albus-wifi/ctrl
+update_config=1
+ap_scan=1
+network={
+    ssid="$ssid"
+    key_mgmt=NONE
+}
+EOF
+    chmod 600 "$CONF"
+}
+
+make_sae_conf() {
+    ssid=$(escape_wpa_string "$1")
+    pass=$(escape_wpa_string "$2")
+    cat > "$CONF" <<EOF
+ctrl_interface=/tmp/albus-wifi/ctrl
+update_config=1
+ap_scan=1
+network={
+    ssid="$ssid"
+    key_mgmt=SAE
+    sae_password="$pass"
+    ieee80211w=2
+}
+EOF
+    chmod 600 "$CONF"
+}
+
+cmd_up() {
+    prepare || {
+        echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
+        return 1
+    }
+    start_supplicant || {
+        echo "wpa_supplicant did not start. Run: wifi logs"
+        return 1
+    }
+    echo "Wi-Fi ready on $IFACE"
+}
+
+cmd_scan() {
+    [ -S "$CTRL/$IFACE" ] || cmd_up || return 1
+
+    "$WPACLI" -p "$CTRL" -i "$IFACE" scan >/dev/null 2>&1 || true
+    sleep 3
+    "$WPACLI" -p "$CTRL" -i "$IFACE" scan_results
+}
+
+cmd_connect() {
+    [ "$#" -ge 2 ] || {
+        echo 'usage: wifi connect "SSID" "PASSWORD"'
+        return 2
+    }
+
+    prepare || return 1
+    require_payload
+    make_psk_conf "$1" "$2"
+    start_supplicant || return 1
+
+    if ! wait_connected; then
+        echo "Association timed out. Run: wifi status; wifi logs"
+        return 1
+    fi
+
+    do_dhcp || return 1
+    cmd_status
+}
+
+cmd_connect_open() {
+    [ "$#" -ge 1 ] || {
+        echo 'usage: wifi connect-open "SSID"'
+        return 2
+    }
+
+    prepare || return 1
+    require_payload
+    make_open_conf "$1"
+    start_supplicant || return 1
+
+    if ! wait_connected; then
+        echo "Association timed out. Run: wifi status; wifi logs"
+        return 1
+    fi
+
+    do_dhcp || return 1
+    cmd_status
+}
+
+cmd_connect_sae() {
+    [ "$#" -ge 2 ] || {
+        echo 'usage: wifi connect-sae "SSID" "PASSWORD"'
+        return 2
+    }
+
+    prepare || return 1
+    require_payload
+    make_sae_conf "$1" "$2"
+    start_supplicant || return 1
+
+    if ! wait_connected; then
+        echo "SAE association timed out. Run: wifi status; wifi logs"
+        return 1
+    fi
+
+    do_dhcp || return 1
+    cmd_status
 }
 
 cmd_status() {
-    echo "Albus recovery Wi-Fi status"
-
-    printf 'firmware_class.path: '
-    if [ -r "$FIRMWARE_PATH_NODE" ]; then
-        cat "$FIRMWARE_PATH_NODE" 2>/dev/null
-        echo
+    echo "--- driver ---"
+    if [ -d "/sys/class/net/$IFACE" ]; then
+        echo "$IFACE: present"
     else
-        echo "<unavailable>"
-    fi
-
-    printf 'wlan fwpath: '
-    if [ -r "$FWPATH_NODE" ]; then
-        cat "$FWPATH_NODE" 2>/dev/null
-        echo
-    else
-        echo "<unavailable>"
+        echo "$IFACE: not present"
     fi
 
     if wcnss_running; then
@@ -316,61 +488,155 @@ cmd_status() {
         echo "wcnss_service: not running"
     fi
 
-    if [ -d "/sys/class/net/$IFACE" ]; then
-        echo "$IFACE: present"
-        if have ip; then
-            ip link show "$IFACE" 2>/dev/null || true
-            ip addr show "$IFACE" 2>/dev/null || true
-        elif have ifconfig; then
-            ifconfig "$IFACE" 2>/dev/null || true
-        fi
-    else
-        echo "$IFACE: not present"
+    echo "--- supplicant ---"
+    if [ -x "$WPACLI" ]; then
+        "$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null || true
     fi
+
+    echo "--- address ---"
+    if [ -x "$BB" ]; then
+        "$BB" ip addr show dev "$IFACE" 2>/dev/null || true
+    else
+        ip addr show dev "$IFACE" 2>/dev/null || true
+    fi
+
+    echo "--- route ---"
+    if [ -x "$BB" ]; then
+        "$BB" ip route 2>/dev/null || true
+    else
+        ip route 2>/dev/null || true
+    fi
+
+    echo "--- DNS ---"
+    cat /etc/resolv.conf 2>/dev/null || true
+}
+
+cmd_disconnect() {
+    if [ -x "$WPACLI" ]; then
+        "$WPACLI" -p "$CTRL" -i "$IFACE" disconnect 2>/dev/null || true
+    fi
+
+    if [ -x "$BB" ]; then
+        "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+    else
+        ip addr flush dev "$IFACE" 2>/dev/null || true
+    fi
+
+    echo "Wi-Fi disconnected"
 }
 
 cmd_down() {
-    require_root
+    stop_supplicant
 
-    if [ -d "/sys/class/net/$IFACE" ]; then
-        if have ip; then
-            ip link set "$IFACE" down 2>/dev/null || true
-        elif have ifconfig; then
-            ifconfig "$IFACE" down 2>/dev/null || true
-        fi
+    if [ -x "$BB" ]; then
+        "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+        "$BB" ip link set "$IFACE" down 2>/dev/null || true
+    else
+        ip addr flush dev "$IFACE" 2>/dev/null || true
+        ip link set "$IFACE" down 2>/dev/null || true
     fi
 
-    killall wcnss_service 2>/dev/null || true
-    echo "Albus Wi-Fi stopped."
+    echo "Wi-Fi stopped"
 }
 
 cmd_logs() {
-    echo "===== state ====="
-    cat "$LOG" 2>/dev/null || true
+    echo "===== recovery Wi-Fi prepare ====="
+    cat "$PREPLOG" 2>/dev/null || true
 
     echo
     echo "===== wcnss_service ====="
     cat "$WCNSS_LOG" 2>/dev/null || true
 
     echo
-    echo "===== kernel ====="
+    echo "===== wpa_supplicant ====="
+    if [ -x "$BB" ]; then
+        "$BB" tail -n 180 "$WPA_LOG" 2>/dev/null || true
+    else
+        tail -n 180 "$WPA_LOG" 2>/dev/null || true
+    fi
+
+    echo
+    echo "===== kernel WLAN/WCNSS ====="
     dmesg 2>/dev/null |
-        grep -iE 'wcnss|wlan|pronto|prima|cfg80211|firmware|pil|subsys' |
-        tail -n 300
+        grep -iE 'wlan|wcnss|pronto|prima|firmware|cfg80211|rfkill|pil|subsys' |
+        tail -n 240
+
+    echo
+    echo "===== state ====="
+    ls -la "$STATE" "$CTRL" 2>/dev/null || true
 }
 
-command=${1:-help}
-case "$command" in
-    help|-h|--help) usage ;;
-    test) cmd_test ;;
-    prepare) cmd_prepare ;;
+cmd_test() {
+    echo "Albus recovery Wi-Fi validation"
+    for f in "$BB" "$WPA" "$WPACLI" "$WPAPASS" "$UDHCPC_SCRIPT"; do
+        if [ -x "$f" ]; then
+            echo "OK   $f"
+        else
+            echo "MISS $f"
+        fi
+    done
+
+    for f in         "$VENDOR_BLOCK" "$MODEM_BLOCK"         /dev/wcnss_ctrl /dev/wcnss_wlan         "$FIRMWARE_PATH_NODE" "$FWPATH_NODE"; do
+        if [ -e "$f" ]; then
+            echo "OK   $f"
+        else
+            echo "MISS $f"
+        fi
+    done
+
+    echo
+    cmd_status
+}
+
+usage() {
+    cat <<'EOF'
+Recovery Wi-Fi (Motorola albus)
+
+  wifi prepare
+  wifi up
+  wifi scan
+  wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK
+  wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE
+  wifi connect-open "SSID"
+  wifi dhcp
+  wifi status
+  wifi ping HOST
+  wifi disconnect
+  wifi down
+  wifi logs
+  wifi test
+EOF
+}
+
+mkdir_state
+cmd=${1:-help}
+shift 2>/dev/null || true
+
+case "$cmd" in
+    prepare) prepare ;;
     up) cmd_up ;;
+    scan) cmd_scan ;;
+    connect) cmd_connect "$@" ;;
+    connect-sae) cmd_connect_sae "$@" ;;
+    connect-open) cmd_connect_open "$@" ;;
+    dhcp) do_dhcp ;;
     status) cmd_status ;;
+    ping)
+        [ "$#" -ge 1 ] || {
+            echo 'usage: wifi ping HOST'
+            exit 2
+        }
+        require_payload
+        "$BB" ping -c 4 "$1"
+        ;;
+    disconnect) cmd_disconnect ;;
     down) cmd_down ;;
     logs) cmd_logs ;;
+    test) cmd_test ;;
+    help|-h|--help) usage ;;
     *)
-        echo "Unknown command: $command" >&2
-        usage >&2
+        echo "Unknown command: $cmd"
+        usage
         exit 2
         ;;
 esac
