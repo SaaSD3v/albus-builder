@@ -1,0 +1,86 @@
+#!/sbin/sh
+# Recovery clock repair for Albus.
+# Stores only our own last-good epoch under /data/local/wifi and never touches
+# Motorola/Qualcomm calibration or ATS files on persist.
+
+PATH=/sbin:/system/bin:/vendor/bin
+export PATH
+BB=/sbin/busybox.albus
+ROOT=/data/local/wifi
+STAMP="$ROOT/.last-good-epoch"
+LOG=/tmp/albus-time-sync.log
+MIN_EPOCH=1704067200
+NTP_TIMEOUT=${ALBUS_TIME_TIMEOUT:-12}
+NTP_SERVERS=${ALBUS_TIME_SERVERS:-"time.cloudflare.com time.google.com pool.ntp.org"}
+
+log(){ printf '[time] %s\n' "$*" >>"$LOG" 2>/dev/null || true; printf '[time] %s\n' "$*"; }
+now_epoch(){ "$BB" date -u +%s 2>/dev/null || date -u +%s 2>/dev/null; }
+is_epoch(){ case "${1:-}" in ''|*[!0-9]*) return 1;; esac; [ "$1" -ge "$MIN_EPOCH" ] 2>/dev/null; }
+data_mounted(){ "$BB" awk '$2=="/data" && $1 ~ /^\/dev\/block\// {f=1} END{exit f?0:1}' /proc/mounts 2>/dev/null; }
+read_stamp(){ [ -r "$STAMP" ] || return 1; v=$("$BB" awk 'NR==1{print;exit}' "$STAMP" 2>/dev/null); is_epoch "$v" || return 1; printf '%s\n' "$v"; }
+set_epoch(){ is_epoch "$1" || return 1; "$BB" date -u -s "@$1" >/dev/null 2>&1 || date -u "@$1" >/dev/null 2>&1; }
+
+restore_floor(){
+  saved=$(read_stamp 2>/dev/null) || return 0
+  current=$(now_epoch 2>/dev/null) || return 1
+  is_epoch "$current" || current=0
+  if [ "$current" -lt "$saved" ] 2>/dev/null; then
+    set_epoch "$saved" && log "restored last-good UTC floor: $saved"
+  fi
+}
+
+save_good(){
+  current=$(now_epoch 2>/dev/null) || return 1
+  is_epoch "$current" || return 1
+  data_mounted || { log "/data unavailable; clock fixed for this boot only"; return 1; }
+  old=$(read_stamp 2>/dev/null || true)
+  if is_epoch "$old" && [ "$current" -le "$old" ] 2>/dev/null; then return 0; fi
+  "$BB" mkdir -p "$ROOT" 2>/dev/null || return 1
+  tmp="$STAMP.$$"
+  printf '%s\n' "$current" >"$tmp" || return 1
+  "$BB" chmod 600 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
+  "$BB" chown 0:0 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
+  "$BB" mv -f "$tmp" "$STAMP" || { "$BB" rm -f "$tmp"; return 1; }
+  "$BB" timeout 5 "$BB" sync >/dev/null 2>&1 || true
+  log "saved last-good UTC epoch: $current"
+}
+
+sync_online(){
+  restore_floor || true
+  before=$(now_epoch 2>/dev/null || true); is_epoch "$before" || before=0
+  set -- "$BB" ntpd -n -q
+  for s in $NTP_SERVERS; do set -- "$@" -p "$s"; done
+  log "one-shot NTP sync (timeout ${NTP_TIMEOUT}s)"
+  "$BB" timeout "$NTP_TIMEOUT" "$@" >/tmp/albus-time-ntpd.log 2>&1
+  rc=$?
+  after=$(now_epoch 2>/dev/null || true)
+  is_epoch "$after" || { log "NTP left an implausible clock"; restore_floor || true; return 1; }
+  advanced=0
+  if [ "$before" -gt 0 ] 2>/dev/null && [ "$after" -gt "$before" ] 2>/dev/null; then
+    delta=$((after-before)); [ "$delta" -ge 60 ] && advanced=1
+  fi
+  if [ "$rc" -ne 0 ] && [ "$advanced" -ne 1 ]; then
+    log "NTP sync failed (rc=$rc); keeping existing clock"; restore_floor || true; return 1
+  fi
+  saved=$(read_stamp 2>/dev/null || true)
+  if is_epoch "$saved" && [ "$after" -lt "$saved" ] 2>/dev/null; then set_epoch "$saved" || true; fi
+  save_good || true
+  log "UTC synchronized: $("$BB" date -u 2>/dev/null || date -u)"
+}
+
+status(){
+  printf 'Albus recovery clock status\n'
+  printf 'system_utc: %s\n' "$("$BB" date -u 2>/dev/null || date -u 2>/dev/null)"
+  printf 'system_epoch: %s\n' "$(now_epoch 2>/dev/null || echo unknown)"
+  saved=$(read_stamp 2>/dev/null || true)
+  is_epoch "$saved" && printf 'last_good_epoch: %s\n' "$saved" || printf 'last_good_epoch: none\n'
+  printf 'persist_policy: /data/local/wifi only; WCNSS persist untouched\n'
+}
+
+case "${1:-status}" in
+  restore) restore_floor ;;
+  save) save_good ;;
+  online|sync) sync_online ;;
+  status) status ;;
+  *) echo "usage: recovery-time-sync-albus {restore|sync|online|save|status}" >&2; exit 2 ;;
+esac
