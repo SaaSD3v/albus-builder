@@ -39,6 +39,8 @@ mkdir -p "$WIFI_REPACK_DIR"
     --config "$ROOT_DIR/recovery-wifi/WCNSS_qcom_cfg.ini" \
     --wpa "$WIFI_OUT/wpa_supplicant.albus" \
     --wpacli "$WIFI_OUT/wpa_cli.albus" \
+    --hostapd "$WIFI_OUT/hostapd.albus" \
+    --iw "$WIFI_OUT/iw.albus" \
     --wcnss "$WIFI_OUT/wcnss-recovery-albus" \
     --busybox "$WIFI_OUT/busybox.albus" \
     --iptables "$WIFI_OUT/iptables.albus" \
@@ -77,9 +79,14 @@ mkdir -p "$WIFI_VERIFY_DIR"
     --combined ramdisk.cpio
 )
 
-for cmd in prepare up start scan connect connect-sae connect-open dhcp status ping disconnect down stop logs test; do
+for cmd in prepare up start scan connect connect-sae connect-open hotspot dhcp status ping disconnect down stop logs test; do
   grep -Fq "$cmd" "$ROOT_DIR/recovery-wifi/wifi" ||
     die "missing Wi-Fi command in controller: $cmd"
+done
+
+for hotspot_cmd in probe-vif start-vif status clients stop; do
+  grep -Fq "$hotspot_cmd" "$ROOT_DIR/recovery-wifi/wifi" ||
+    die "missing hotspot subcommand in controller: $hotspot_cmd"
 done
 
 if grep -Eq '^[[:space:]]*export[[:space:]]+LD_LIBRARY_PATH' "$ROOT_DIR/recovery-wifi/wifi"; then
@@ -104,12 +111,15 @@ sed -i \
 {
   printf 'bare_recovery_before_wifi_sha256=%s\n' "$BARE_WIFI_BASE_SHA256"
   printf 'wifi_overlay=channel-style-client-v2-second-lzma-initramfs\n'
-  printf 'wifi_commands=prepare,up,start,scan,connect,connect-sae,connect-open,dhcp,status,ping,disconnect,down,stop,logs,test\n'
-  printf 'wifi_userspace=static-wpa-supplicant-2.9-plus-static-busybox-plus-static-legacy-iptables-plus-static-albus-wcnss-helper\n'
+  printf 'wifi_commands=prepare,up,start,scan,connect,connect-sae,connect-open,hotspot-probe-vif,hotspot-start-vif,hotspot-status,hotspot-clients,hotspot-stop,dhcp,status,ping,disconnect,down,stop,logs,test\n'
+  printf 'wifi_userspace=static-wpa-supplicant-2.9-plus-static-hostapd-2.9-plus-static-iw-plus-static-busybox-udhcpd-plus-static-legacy-iptables-plus-static-albus-wcnss-helper\n'
   printf 'droidspaces_iptables=legacy-static-multicall-with-iptables-save-restore-aliases\n'
   printf 'wifi_system_mount=not-required\n'
   printf 'wifi_vendor_service=not-used\n'
-  printf 'wifi_hotspot=not-included\n'
+  printf 'wifi_hotspot=transient-ap0-vif-hardware-validation\n'
+  printf 'wifi_hotspot_address=192.168.43.1/24\n'
+  printf 'wifi_hotspot_persistence=tmpfs-only\n'
+  printf 'wifi_hotspot_nat=not-enabled-yet\n'
   printf 'wifi_overlay_size=%s\n' "$(stat -c '%s' "$WIFI_OVERLAY_RAMDISK")"
 } >> "$ARTIFACT_DIR/build-info.txt"
 
@@ -117,6 +127,8 @@ cp "$ROOT_DIR/recovery-wifi/wifi" "$ARTIFACT_DIR/wifi"
 cp "$ROOT_DIR/recovery-wifi/WCNSS_qcom_cfg.ini" "$ARTIFACT_DIR/WCNSS_qcom_cfg.ini"
 cp "$WIFI_OUT/wpa_supplicant.albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/wpa_cli.albus" "$ARTIFACT_DIR/"
+cp "$WIFI_OUT/hostapd.albus" "$ARTIFACT_DIR/"
+cp "$WIFI_OUT/iw.albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/wcnss-recovery-albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/busybox.albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/iptables.albus" "$ARTIFACT_DIR/"
@@ -134,6 +146,8 @@ cp "$WIFI_OUT/wifi-udhcpc.script" "$ARTIFACT_DIR/"
     WCNSS_qcom_cfg.ini \
     wpa_supplicant.albus \
     wpa_cli.albus \
+    hostapd.albus \
+    iw.albus \
     wcnss-recovery-albus \
     busybox.albus \
     iptables.albus \
