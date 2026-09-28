@@ -34,29 +34,31 @@ def parse_lzma_alone_header(data: bytes):
     lp = rest % 5
     pb = rest // 5
     dict_size = struct.unpack_from("<I", data, 1)[0]
-    try:
-        raw = lzma.decompress(data, format=lzma.FORMAT_ALONE)
-    except lzma.LZMAError as e:
-        raise SystemExit(f"base ramdisk is not valid LZMA-alone: {e}")
+    raw = lzma.decompress(data, format=lzma.FORMAT_ALONE)
     if not raw.startswith((b"070701", b"070702")):
         raise SystemExit("decompressed base ramdisk is not newc CPIO")
     return dict_size, lc, lp, pb
 
-def build_overlay(base: Path, wifi: Path, cfg: Path, output: Path):
-    base_data = base.read_bytes()
+def build_overlay(args):
+    base_data = args.base.read_bytes()
     dict_size, lc, lp, pb = parse_lzma_alone_header(base_data)
 
     entries = [
-        ("sbin/wifi", wifi.read_bytes(), stat.S_IFREG | 0o755, 1),
-        ("sbin/albus-WCNSS_qcom_cfg.ini", cfg.read_bytes(), stat.S_IFREG | 0o644, 1),
+        ("sbin/wifi", args.wifi.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/albus-WCNSS_qcom_cfg.ini", args.config.read_bytes(), stat.S_IFREG | 0o644),
+        ("sbin/wpa_supplicant.albus", args.wpa.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/wpa_cli.albus", args.wpacli.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/wpa_passphrase.albus", args.wpapass.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/busybox.albus", args.busybox.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/wifi-udhcpc.script", args.udhcpc_script.read_bytes(), stat.S_IFREG | 0o755),
     ]
 
     raw = bytearray()
     ino = 0x7000
-    for name, data, mode, nlink in entries:
-        raw += newc_entry(name, data, ino, mode, nlink)
+    for name, data, mode in entries:
+        raw += newc_entry(name, data, ino, mode)
         ino += 1
-    raw += newc_entry("TRAILER!!!", b"", ino, 0, 1)
+    raw += newc_entry("TRAILER!!!", b"", ino, 0)
 
     filters = [{
         "id": lzma.FILTER_LZMA1,
@@ -72,15 +74,23 @@ def build_overlay(base: Path, wifi: Path, cfg: Path, output: Path):
 
     expected_props = bytes([((pb * 5 + lp) * 9 + lc)]) + struct.pack("<I", dict_size)
     if packed[:5] != expected_props:
-        raise SystemExit(
-            f"overlay LZMA parameters changed: expected={expected_props.hex()} got={packed[:5].hex()}"
-        )
+        raise SystemExit("overlay LZMA parameters changed")
 
     check = lzma.decompress(packed, format=lzma.FORMAT_ALONE)
-    if b"sbin/wifi\0" not in check or b"sbin/albus-WCNSS_qcom_cfg.ini\0" not in check:
-        raise SystemExit("overlay verification failed")
+    required = (
+        b"sbin/wifi\0",
+        b"sbin/albus-WCNSS_qcom_cfg.ini\0",
+        b"sbin/wpa_supplicant.albus\0",
+        b"sbin/wpa_cli.albus\0",
+        b"sbin/wpa_passphrase.albus\0",
+        b"sbin/busybox.albus\0",
+        b"sbin/wifi-udhcpc.script\0",
+    )
+    for marker in required:
+        if marker not in check:
+            raise SystemExit(f"overlay verification failed: missing {marker!r}")
 
-    output.write_bytes(packed)
+    args.output.write_bytes(packed)
 
     print(f"base_ramdisk_bytes={len(base_data)}")
     print(f"overlay_raw_bytes={len(raw)}")
@@ -91,16 +101,23 @@ def build_overlay(base: Path, wifi: Path, cfg: Path, output: Path):
 def verify_combined(base: Path, combined: Path):
     base_data = base.read_bytes()
     combined_data = combined.read_bytes()
-
     if not combined_data.startswith(base_data):
         raise SystemExit("TeamWin ramdisk prefix changed")
 
     tail = combined_data[len(base_data):]
     if not tail:
-        raise SystemExit("Wi-Fi overlay is missing from combined ramdisk")
+        raise SystemExit("Wi-Fi overlay is missing")
 
     raw = lzma.decompress(tail, format=lzma.FORMAT_ALONE)
-    required = (b"sbin/wifi\0", b"sbin/albus-WCNSS_qcom_cfg.ini\0", b"TRAILER!!!\0")
+    required = (
+        b"sbin/wifi\0",
+        b"sbin/wpa_supplicant.albus\0",
+        b"sbin/wpa_cli.albus\0",
+        b"sbin/wpa_passphrase.albus\0",
+        b"sbin/busybox.albus\0",
+        b"sbin/wifi-udhcpc.script\0",
+        b"TRAILER!!!\0",
+    )
     for marker in required:
         if marker not in raw:
             raise SystemExit(f"combined overlay missing {marker!r}")
@@ -116,6 +133,11 @@ def main():
     b.add_argument("--base", type=Path, required=True)
     b.add_argument("--wifi", type=Path, required=True)
     b.add_argument("--config", type=Path, required=True)
+    b.add_argument("--wpa", type=Path, required=True)
+    b.add_argument("--wpacli", type=Path, required=True)
+    b.add_argument("--wpapass", type=Path, required=True)
+    b.add_argument("--busybox", type=Path, required=True)
+    b.add_argument("--udhcpc-script", type=Path, required=True)
     b.add_argument("--output", type=Path, required=True)
 
     v = sub.add_parser("verify")
@@ -124,7 +146,7 @@ def main():
 
     args = ap.parse_args()
     if args.cmd == "build":
-        build_overlay(args.base, args.wifi, args.config, args.output)
+        build_overlay(args)
     else:
         verify_combined(args.base, args.combined)
 
