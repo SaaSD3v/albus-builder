@@ -14,6 +14,7 @@ WPA_TAG=hostap_2_9
 OPENSSL_TAG=OpenSSL_1_1_1w
 LIBNL_TAG=libnl3_2_25
 BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
+IPTABLES_COMMIT=9b59ee3221ddef66ae1fe796088019496127f44f # iptables 1.8.0 legacy
 
 rm -rf "$OUT" "$SRC" "$PREFIX"
 mkdir -p "$OUT" "$SRC" "$PREFIX"
@@ -97,6 +98,36 @@ cp busybox "$OUT/busybox.albus"
 cp .config "$OUT/busybox.config"
 popd >/dev/null
 
+echo "==> static legacy iptables for DroidSpaces"
+# Same recovery-side fix proven on Channel: explicit DroidSpaces port forwards
+# call iptables(8), iptables-save and iptables-restore. Build the legacy
+# multi-call binary statically so recovery does not depend on Android /system.
+git init "$SRC/iptables"
+git -C "$SRC/iptables" remote add origin https://github.com/rtchack/iptables.git
+git -C "$SRC/iptables" fetch --depth=1 origin "$IPTABLES_COMMIT"
+git -C "$SRC/iptables" checkout --detach FETCH_HEAD
+pushd "$SRC/iptables" >/dev/null
+./autogen.sh
+PKG_CONFIG_LIBDIR=/nonexistent ./configure \
+  --host=aarch64-linux-gnu \
+  --prefix="$PREFIX/iptables" \
+  --disable-shared \
+  --enable-static \
+  --disable-nftables \
+  --disable-ipv6 \
+  --disable-devel \
+  --disable-libipq \
+  --disable-bpf-compiler \
+  --disable-nfsynproxy \
+  --disable-connlabel \
+  --with-xt-lock-name=/tmp/xtables.lock \
+  CC="$CC" \
+  CFLAGS='-Os -ffunction-sections -fdata-sections' \
+  LDFLAGS='-static -Wl,--gc-sections'
+make -j"$(nproc)"
+cp iptables/xtables-legacy-multi "$OUT/iptables.albus"
+popd >/dev/null
+
 echo "==> static Albus WCNSS helper"
 "$CC" -static -Os -ffunction-sections -fdata-sections \
   -Wl,--gc-sections \
@@ -109,6 +140,7 @@ chmod 0755 \
   "$OUT/wpa_supplicant.albus" \
   "$OUT/wpa_cli.albus" \
   "$OUT/busybox.albus" \
+  "$OUT/iptables.albus" \
   "$OUT/wcnss-recovery-albus" \
   "$OUT/wifi-udhcpc.script"
 
@@ -116,6 +148,7 @@ for f in \
   "$OUT/wpa_supplicant.albus" \
   "$OUT/wpa_cli.albus" \
   "$OUT/busybox.albus" \
+  "$OUT/iptables.albus" \
   "$OUT/wcnss-recovery-albus"
 do
   "$STRIP" --strip-all "$f"
