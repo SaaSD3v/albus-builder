@@ -849,6 +849,7 @@ make_hotspot_conf() {
     pass=$2
     channel=$3
     target=${4:-$HOTSPOT_CONF}
+    ap_iface=${5:-$HOTSPOT_IFACE}
 
     hotspot_channel_band "$channel" || {
         echo "Unsupported hotspot channel: $channel" >&2
@@ -871,7 +872,7 @@ make_hotspot_conf() {
     fi
 
     {
-        printf 'interface=%s\n' "$HOTSPOT_IFACE"
+        printf 'interface=%s\n' "$ap_iface"
         printf '%s\n' 'driver=nl80211'
         printf 'ctrl_interface=%s\n' "$HOTSPOT_CTRL"
         printf 'ssid=%s\n' "$ssid"
@@ -1216,6 +1217,10 @@ hotspot_active_iface() {
     if [ -f "$HOTSPOT_MARKER" ]; then
         active=$(cat "$HOTSPOT_MARKER" 2>/dev/null || true)
         case "$active" in
+            active)
+                printf '%s\n' "$IFACE"
+                return 0
+                ;;
             vif:*)
                 active=${active#vif:}
                 [ -n "$active" ] && {
@@ -1265,6 +1270,79 @@ cleanup_hotspot_failure() {
     clear_hotspot_state
 }
 
+start_hostapd() {
+    clear_hotspot_state
+    stop_supplicant
+    deconfigure_network
+
+    "$BB" rm -rf "$HOTSPOT_CTRL"
+    "$BB" mkdir -p "$HOTSPOT_CTRL"
+    : > "$HOTSPOT_LOG"
+    "$HOSTAPD" -B -P "$HOTSPOT_HOSTAPD_PID" -f "$HOTSPOT_LOG" "$HOTSPOT_CONF"
+}
+
+restore_client_after_hotspot_failure() {
+    clear_hotspot_state
+    stop_supplicant
+    deconfigure_network
+    echo "Hotspot startup failed; attempting to restore client Wi-Fi."
+    cmd_up || {
+        echo "Client Wi-Fi could not be restored automatically. Run: wifi logs"
+        return 1
+    }
+}
+
+cmd_hotspot_start() {
+    [ "$#" -eq 0 ] || {
+        echo "usage: wifi hotspot start"
+        echo 'Create a saved hotspot first with: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+        return 2
+    }
+
+    load_saved_hotspot_request || {
+        echo 'No saved hotspot. Create one with: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+        return 2
+    }
+
+    prepare || {
+        echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
+        return 1
+    }
+
+    make_hotspot_conf "$HOTSPOT_REQUEST_SSID" "$HOTSPOT_REQUEST_PASS" "$HOTSPOT_REQUEST_CHANNEL" "$HOTSPOT_CONF" "$IFACE" || return 1
+
+    if ! start_hostapd; then
+        echo "Could not start hostapd in AP-only mode."
+        restore_client_after_hotspot_failure
+        return 1
+    fi
+
+    if ! wait_hotspot_ready "$IFACE"; then
+        echo "AP-only mode did not become ready."
+        restore_client_after_hotspot_failure
+        return 1
+    fi
+
+    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+    "$BB" ip addr add "$HOTSPOT_CIDR" dev "$IFACE" 2>/dev/null || {
+        echo "Could not assign hotspot address $HOTSPOT_CIDR."
+        restore_client_after_hotspot_failure
+        return 1
+    }
+    "$BB" ip link set "$IFACE" up 2>/dev/null || true
+
+    if ! start_udhcpd "$IFACE"; then
+        echo "Hotspot AP is up, but DHCP server failed."
+        restore_client_after_hotspot_failure
+        return 1
+    fi
+
+    printf '%s\n' active > "$HOTSPOT_MARKER"
+    "$BB" chmod 600 "$HOTSPOT_MARKER" 2>/dev/null || true
+    echo "AP-only hotspot ready on $IFACE: $HOTSPOT_ADDR/24"
+    cmd_hotspot_status
+}
+
 start_hostapd_vif() {
     stop_hostapd
     "$BB" rm -rf "$HOTSPOT_CTRL"
@@ -1274,6 +1352,7 @@ start_hostapd_vif() {
 }
 
 wait_hotspot_ready() {
+    ready_iface=${1:-$HOTSPOT_IFACE}
     i=0
     while [ "$i" -lt 20 ]; do
         pid=""
@@ -1284,7 +1363,7 @@ wait_hotspot_ready() {
             *)
                 kill -0 "$pid" 2>/dev/null || return 1
                 if "$BB" grep -q 'AP-ENABLED' "$HOTSPOT_LOG" 2>/dev/null &&
-                   [ -d "/sys/class/net/$HOTSPOT_IFACE" ]; then
+                   [ -d "/sys/class/net/$ready_iface" ]; then
                     return 0
                 fi
                 ;;
@@ -1296,6 +1375,7 @@ wait_hotspot_ready() {
 }
 
 start_udhcpd() {
+    dhcp_iface=${1:-$HOTSPOT_IFACE}
     : > "$HOTSPOT_LEASES"
     : > "$HOTSPOT_DHCP_LOG"
 
@@ -1311,7 +1391,7 @@ start_udhcpd() {
     {
         printf '%s\n' 'start 192.168.43.20'
         printf '%s\n' 'end 192.168.43.60'
-        printf 'interface %s\n' "$HOTSPOT_IFACE"
+        printf 'interface %s\n' "$dhcp_iface"
         printf '%s\n' 'max_leases 41'
         printf '%s\n' 'opt subnet 255.255.255.0'
         printf '%s\n' 'opt router 192.168.43.1'
@@ -1619,13 +1699,15 @@ cmd_hotspot_status() {
     echo "--- hotspot ---"
     hotspot_mode=$(cat "$HOTSPOT_MARKER" 2>/dev/null || true)
     case "$hotspot_mode" in
+        active) echo "mode: AP-only on wlan0" ;;
         repeater-2g:*) echo "mode: repeater 2.4 GHz (AP+STA+NAT)" ;;
         repeater-5g:*) echo "mode: repeater 5 GHz (AP+STA+NAT)" ;;
         repeater:*) echo "mode: repeater legacy/auto (AP+STA+NAT)" ;;
         vif:*) echo "mode: VIF concurrency (AP+STA, no NAT)" ;;
         *) echo "mode: unknown" ;;
     esac
-    echo "interface: $(hotspot_active_iface)"
+    active_iface=$(hotspot_active_iface)
+    echo "interface: $active_iface"
     pid=""
     [ -f "$HOTSPOT_HOSTAPD_PID" ] &&
         pid=$(cat "$HOTSPOT_HOSTAPD_PID" 2>/dev/null || true)
@@ -1640,7 +1722,7 @@ cmd_hotspot_status() {
     "$BB" tail -n 15 "$HOTSPOT_LOG" 2>/dev/null || true
 
     echo "--- address ---"
-    "$BB" ip addr show dev "$HOTSPOT_IFACE" 2>/dev/null || true
+    "$BB" ip addr show dev "$active_iface" 2>/dev/null || true
 
     echo "--- DHCP ---"
     pid=""
@@ -1676,13 +1758,25 @@ cmd_hotspot_clients() {
 cmd_hotspot_stop() {
     was_active=0
     [ -f "$HOTSPOT_MARKER" ] && was_active=1
+    active_iface=$(hotspot_active_iface)
+
+    if [ "$was_active" -eq 1 ] && [ "$active_iface" != "$IFACE" ]; then
+        clear_hotspot_state
+        echo "Concurrent hotspot stopped; client Wi-Fi on $IFACE was left running."
+        cmd_status
+        return 0
+    fi
+
     clear_hotspot_state
+    stop_supplicant
+    deconfigure_network
 
     if [ "$was_active" -eq 1 ]; then
-        echo "Hotspot stopped; client interface $IFACE was left intact."
+        echo "AP-only hotspot stopped. Restoring client Wi-Fi."
     else
-        echo "Hotspot was not active; stale AP state was cleaned."
+        echo "Hotspot was not active. Ensuring client Wi-Fi is ready."
     fi
+    cmd_up
 }
 
 escape_wpa_string() {
@@ -2085,6 +2179,7 @@ Recovery Wi-Fi (Motorola albus)
   wifi hotspot config                                  # show saved ap0 config
   wifi hotspot config ssid|password|channel VALUE
   wifi hotspot delete
+  wifi hotspot start                                    # AP-only on wlan0 using saved profile
   wifi hotspot probe-vif
   wifi hotspot start-vif ["SSID" "PASSWORD" [CHANNEL]] # AP+STA, no NAT; no args = saved ap0
   wifi hotspot repeater ["SSID" "PASSWORD" [CHANNEL]]   # auto: follows wlan0 band/channel
@@ -2130,6 +2225,7 @@ case "$cmd" in
             create) cmd_hotspot_create "$@" ;;
             config) cmd_hotspot_config "$@" ;;
             delete) cmd_hotspot_delete "$@" ;;
+            start) cmd_hotspot_start "$@" ;;
             probe-vif) cmd_hotspot_probe_vif ;;
             start-vif) cmd_hotspot_start_vif "$@" ;;
             repeater) cmd_hotspot_repeater "$@" ;;
