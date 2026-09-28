@@ -41,6 +41,7 @@ mkdir -p "$WIFI_REPACK_DIR"
     --wpacli "$WIFI_OUT/wpa_cli.albus" \
     --wcnss "$WIFI_OUT/wcnss-recovery-albus" \
     --busybox "$WIFI_OUT/busybox.albus" \
+    --iptables "$WIFI_OUT/iptables.albus" \
     --udhcpc-script "$WIFI_OUT/wifi-udhcpc.script" \
     --output "$WIFI_OVERLAY_RAMDISK"
 
@@ -104,7 +105,8 @@ sed -i \
   printf 'bare_recovery_before_wifi_sha256=%s\n' "$BARE_WIFI_BASE_SHA256"
   printf 'wifi_overlay=channel-style-client-v2-second-lzma-initramfs\n'
   printf 'wifi_commands=prepare,up,start,scan,connect,connect-sae,connect-open,dhcp,status,ping,disconnect,down,stop,logs,test\n'
-  printf 'wifi_userspace=static-wpa-supplicant-2.9-plus-static-busybox-plus-static-albus-wcnss-helper\n'
+  printf 'wifi_userspace=static-wpa-supplicant-2.9-plus-static-busybox-plus-static-legacy-iptables-plus-static-albus-wcnss-helper\n'
+  printf 'droidspaces_iptables=legacy-static-multicall-with-iptables-save-restore-aliases\n'
   printf 'wifi_system_mount=not-required\n'
   printf 'wifi_vendor_service=not-used\n'
   printf 'wifi_hotspot=not-included\n'
@@ -117,6 +119,7 @@ cp "$WIFI_OUT/wpa_supplicant.albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/wpa_cli.albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/wcnss-recovery-albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/busybox.albus" "$ARTIFACT_DIR/"
+cp "$WIFI_OUT/iptables.albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/wifi-udhcpc.script" "$ARTIFACT_DIR/"
 
 (
@@ -133,6 +136,7 @@ cp "$WIFI_OUT/wifi-udhcpc.script" "$ARTIFACT_DIR/"
     wpa_cli.albus \
     wcnss-recovery-albus \
     busybox.albus \
+    iptables.albus \
     wifi-udhcpc.script \
     > SHA256SUMS
 )
