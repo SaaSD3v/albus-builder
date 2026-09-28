@@ -25,17 +25,19 @@ mkdir -p "$WIFI_REPACK_DIR"
 
   [[ -f ramdisk.cpio ]] || die "magiskboot did not extract ramdisk.cpio for Wi-Fi overlay"
 
-  cp "$ROOT_DIR/recovery-wifi/wifi" wifi
-  cp "$ROOT_DIR/recovery-wifi/WCNSS_qcom_cfg.ini" albus-WCNSS_qcom_cfg.ini
-
-  chmod 0755 wifi
-  chmod 0644 albus-WCNSS_qcom_cfg.ini
+  # -n keeps every boot component byte-for-byte as stored. The Albus TeamWin
+  # ramdisk is LZMA, so decompress only that component before cpio editing.
+  # Keep the already-compressed kernel untouched; magiskboot repack detects it
+  # as compressed and does not recompress that component.
+  mv ramdisk.cpio ramdisk.cpio.lzma
+  "$MAGISKBOOT" decompress ramdisk.cpio.lzma ramdisk.cpio
+  rm -f ramdisk.cpio.lzma
 
   "$MAGISKBOOT" cpio ramdisk.cpio \
-    "add 0755 sbin/wifi wifi" \
-    "add 0644 sbin/albus-WCNSS_qcom_cfg.ini albus-WCNSS_qcom_cfg.ini"
+    "add 0755 sbin/wifi $ROOT_DIR/recovery-wifi/wifi" \
+    "add 0644 sbin/albus-WCNSS_qcom_cfg.ini $ROOT_DIR/recovery-wifi/WCNSS_qcom_cfg.ini"
 
-  "$MAGISKBOOT" repack -n "$WIFI_BASE_IMAGE" "$FINAL_IMAGE"
+  "$MAGISKBOOT" repack "$WIFI_BASE_IMAGE" "$FINAL_IMAGE"
 )
 
 [[ -s "$FINAL_IMAGE" ]] || die "Wi-Fi recovery image was not produced"
@@ -55,6 +57,10 @@ mkdir -p "$WIFI_VERIFY_DIR"
     die "kernel changed while injecting the Wi-Fi overlay"
   cmp -s "$DT_IMAGE" extra ||
     die "DT changed while injecting the Wi-Fi overlay"
+
+  mv ramdisk.cpio ramdisk.cpio.lzma
+  "$MAGISKBOOT" decompress ramdisk.cpio.lzma ramdisk.cpio
+  rm -f ramdisk.cpio.lzma
 
   mkdir extracted
   (
