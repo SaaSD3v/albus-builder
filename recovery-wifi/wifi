@@ -17,7 +17,7 @@ WPA=/sbin/wpa_supplicant.albus
 WPACLI=/sbin/wpa_cli.albus
 HOSTAPD=/sbin/hostapd.albus
 IW=/sbin/iw.albus
-IPTABLES=/sbin/iptables.albus
+IPTABLES=/sbin/iptables
 WCNSS=/sbin/wcnss-recovery-albus
 UDHCPC_SCRIPT=/sbin/wifi-udhcpc.script
 
@@ -112,7 +112,7 @@ ensure_persistent_store() {
             return 1
         }
     else
-        version_tmp="$WIFI_DB_ROOT/.version.${PPID:-0}"
+        version_tmp="$WIFI_DB_ROOT/.version.$$"
         printf '%s\n' '1' > "$version_tmp" || return 1
         "$BB" chmod 600 "$version_tmp" 2>/dev/null || { "$BB" rm -f "$version_tmp"; return 1; }
         "$BB" chown 0:0 "$version_tmp" 2>/dev/null || { "$BB" rm -f "$version_tmp"; return 1; }
@@ -180,7 +180,7 @@ persist_network() {
     ensure_persistent_store || return 1
     nid=$(network_id "$ssid") || return 1
     target="$WIFI_WLAN_NETWORKS/$nid.conf"
-    tmp="$WIFI_WLAN_NETWORKS/.$nid.${PPID:-0}"
+    tmp="$WIFI_WLAN_NETWORKS/.$nid.$$"
 
     {
         printf '%s\n' '# albus-wifi-db=1'
@@ -205,7 +205,7 @@ build_runtime_from_persistent() {
     PERSIST_COUNT=0
     ensure_persistent_store || return 1
 
-    tmp="$STATE/.known-networks.${PPID:-0}"
+    tmp="$STATE/.known-networks.$$"
     write_base_conf "$tmp" || return 1
 
     for saved in "$WIFI_WLAN_NETWORKS"/*.conf; do
@@ -228,7 +228,7 @@ build_runtime_from_persistent() {
 
 copy_candidate_to_runtime() {
     source=$1
-    tmp="$STATE/.runtime.${PPID:-0}"
+    tmp="$STATE/.runtime.$$"
     "$BB" cp "$source" "$tmp" || return 1
     "$BB" chmod 600 "$tmp" 2>/dev/null || true
     "$BB" mv -f "$tmp" "$CONF" || { "$BB" rm -f "$tmp"; return 1; }
@@ -735,7 +735,7 @@ persist_hotspot_conf() {
     source=$1
     ensure_persistent_store || return 1
 
-    tmp="$WIFI_AP_DIR/.hotspot.${PPID:-0}"
+    tmp="$WIFI_AP_DIR/.hotspot.$$"
     {
         printf '%s\n' '# albus-hotspot-db=1'
         printf '%s\n' '# interface=ap0'
@@ -812,7 +812,7 @@ cmd_hotspot_create() {
     }
 
     channel=${3:-6}
-    candidate="$STATE/hotspot.persist.${PPID:-0}"
+    candidate="$STATE/hotspot.persist.$$"
     make_hotspot_conf "$1" "$2" "$channel" "$candidate" || {
         "$BB" rm -f "$candidate" 2>/dev/null || true
         return 1
@@ -879,7 +879,7 @@ cmd_hotspot_config() {
         esac
     done
 
-    candidate="$STATE/hotspot.persist.${PPID:-0}"
+    candidate="$STATE/hotspot.persist.$$"
     make_hotspot_conf "$new_ssid" "$new_pass" "$new_channel" "$candidate" || {
         "$BB" rm -f "$candidate" 2>/dev/null || true
         return 1
