@@ -50,6 +50,10 @@ def build_overlay(args):
         ("sbin/wpa_cli.albus", args.wpacli.read_bytes(), stat.S_IFREG | 0o755),
         ("sbin/wcnss-recovery-albus", args.wcnss.read_bytes(), stat.S_IFREG | 0o755),
         ("sbin/busybox.albus", args.busybox.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/iptables.albus", args.iptables.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/iptables", b"iptables.albus", stat.S_IFLNK | 0o777),
+        ("sbin/iptables-save", b"iptables.albus", stat.S_IFLNK | 0o777),
+        ("sbin/iptables-restore", b"iptables.albus", stat.S_IFLNK | 0o777),
         ("sbin/wifi-udhcpc.script", args.udhcpc_script.read_bytes(), stat.S_IFREG | 0o755),
     ]
 
@@ -84,6 +88,10 @@ def build_overlay(args):
         b"sbin/wpa_cli.albus\0",
         b"sbin/wcnss-recovery-albus\0",
         b"sbin/busybox.albus\0",
+        b"sbin/iptables.albus\0",
+        b"sbin/iptables\0",
+        b"sbin/iptables-save\0",
+        b"sbin/iptables-restore\0",
         b"sbin/wifi-udhcpc.script\0",
     )
     for marker in required:
@@ -115,6 +123,10 @@ def verify_combined(base: Path, combined: Path):
         b"sbin/wpa_cli.albus\0",
         b"sbin/wcnss-recovery-albus\0",
         b"sbin/busybox.albus\0",
+        b"sbin/iptables.albus\0",
+        b"sbin/iptables\0",
+        b"sbin/iptables-save\0",
+        b"sbin/iptables-restore\0",
         b"sbin/wifi-udhcpc.script\0",
         b"TRAILER!!!\0",
     )
@@ -137,6 +149,7 @@ def main():
     b.add_argument("--wpacli", type=Path, required=True)
     b.add_argument("--wcnss", type=Path, required=True)
     b.add_argument("--busybox", type=Path, required=True)
+    b.add_argument("--iptables", type=Path, required=True)
     b.add_argument("--udhcpc-script", type=Path, required=True)
     b.add_argument("--output", type=Path, required=True)
 
