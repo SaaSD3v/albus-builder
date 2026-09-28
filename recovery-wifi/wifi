@@ -29,7 +29,16 @@ PERSIST_ROOT=$MNT/persist
 FW=$STATE/firmware
 CTRL=$STATE/ctrl
 CONF=$STATE/wpa_supplicant.conf
+CANDIDATE=$STATE/candidate.conf
 WPA_LOG=$STATE/wpa_supplicant.log
+
+WIFI_DB_ROOT=/data/local/wifi
+WIFI_DB_VERSION=$WIFI_DB_ROOT/.version
+WIFI_WLAN_DIR=$WIFI_DB_ROOT/wlan
+WIFI_WLAN_NETWORKS=$WIFI_WLAN_DIR/networks
+WIFI_AP_DIR=$WIFI_DB_ROOT/ap0
+WIFI_AP_CONF=$WIFI_AP_DIR/hotspot.conf
+PERSIST_COUNT=0
 WCNSS_LOG=$STATE/wcnss-helper.log
 PREPLOG=$STATE/prepare.log
 READY=$STATE/wcnss.opened
@@ -77,6 +86,179 @@ log() {
 
 is_mounted() {
     grep -q " $1 " /proc/mounts 2>/dev/null
+}
+
+data_partition_mounted() {
+    "$BB" awk '$2 == "/data" && $1 ~ /^\/dev\/block\// { ok=1 } END { exit ok ? 0 : 1 }' /proc/mounts 2>/dev/null
+}
+
+ensure_persistent_store() {
+    if ! data_partition_mounted; then
+        if command -v twrp >/dev/null 2>&1; then
+            twrp mount data >/dev/null 2>&1 || true
+        fi
+    fi
+
+    data_partition_mounted || return 1
+
+    "$BB" mkdir -p "$WIFI_WLAN_NETWORKS" "$WIFI_AP_DIR" 2>/dev/null || return 1
+    "$BB" chmod 700 "$WIFI_DB_ROOT" "$WIFI_WLAN_DIR" "$WIFI_WLAN_NETWORKS" "$WIFI_AP_DIR" 2>/dev/null || return 1
+    "$BB" chown 0:0 "$WIFI_DB_ROOT" "$WIFI_WLAN_DIR" "$WIFI_WLAN_NETWORKS" "$WIFI_AP_DIR" 2>/dev/null || return 1
+
+    if [ -f "$WIFI_DB_VERSION" ]; then
+        db_version=$(cat "$WIFI_DB_VERSION" 2>/dev/null || true)
+        [ "$db_version" = "1" ] || {
+            echo "Unsupported Albus Wi-Fi database version: $db_version" >&2
+            return 1
+        }
+    else
+        version_tmp="$WIFI_DB_ROOT/.version.$"
+        printf '%s\n' '1' > "$version_tmp" || return 1
+        "$BB" chmod 600 "$version_tmp" 2>/dev/null || { "$BB" rm -f "$version_tmp"; return 1; }
+        "$BB" chown 0:0 "$version_tmp" 2>/dev/null || { "$BB" rm -f "$version_tmp"; return 1; }
+        "$BB" mv -f "$version_tmp" "$WIFI_DB_VERSION" || { "$BB" rm -f "$version_tmp"; return 1; }
+    fi
+
+    recover_pending_wlan_profiles
+    return 0
+}
+
+network_id() {
+    nid=$(printf '%s' "$1" | "$BB" sha256sum 2>/dev/null | "$BB" awk '{print $1}')
+    [ -n "$nid" ] || return 1
+    printf '%s\n' "$nid"
+}
+
+recover_pending_wlan_profiles() {
+    for pending in "$WIFI_WLAN_NETWORKS"/.*.*; do
+        [ -f "$pending" ] || continue
+        pending_name=${pending##*/}
+        pending_rest=${pending_name#.}
+        pending_hash=${pending_rest%%.*}
+
+        [ "${#pending_hash}" -eq 64 ] || continue
+        case "$pending_hash" in
+            *[!0-9a-f]*) continue ;;
+        esac
+
+        "$BB" grep -qx '# albus-wifi-db=1' "$pending" 2>/dev/null || continue
+        "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$pending" 2>/dev/null || continue
+
+        final="$WIFI_WLAN_NETWORKS/$pending_hash.conf"
+        if [ -f "$final" ]; then
+            "$BB" rm -f "$pending"
+            continue
+        fi
+
+        "$BB" chmod 600 "$pending" 2>/dev/null || continue
+        "$BB" chown 0:0 "$pending" 2>/dev/null || continue
+        "$BB" mv -f "$pending" "$final" 2>/dev/null || true
+    done
+}
+
+write_base_conf() {
+    target=$1
+    {
+        printf '%s\n' 'ctrl_interface=/tmp/albus-wifi/ctrl'
+        printf '%s\n' 'update_config=1'
+        printf '%s\n' 'ap_scan=1'
+    } > "$target" || return 1
+    "$BB" chmod 600 "$target" 2>/dev/null || true
+}
+
+append_network_block() {
+    source=$1
+    target=$2
+    "$BB" sed -n '/^[[:space:]]*network[[:space:]]*={/,/^[[:space:]]*}[[:space:]]*$/p' "$source" >> "$target"
+}
+
+persist_network() {
+    security=$1
+    ssid=$2
+    source=$3
+
+    ensure_persistent_store || return 1
+    nid=$(network_id "$ssid") || return 1
+    target="$WIFI_WLAN_NETWORKS/$nid.conf"
+    tmp="$WIFI_WLAN_NETWORKS/.$nid.$"
+
+    {
+        printf '%s\n' '# albus-wifi-db=1'
+        printf '%s\n' '# interface=wlan0'
+        printf '# security=%s\n' "$security"
+    } > "$tmp" || return 1
+
+    append_network_block "$source" "$tmp"
+    "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$tmp" 2>/dev/null || {
+        "$BB" rm -f "$tmp"
+        return 1
+    }
+
+    "$BB" chmod 600 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
+    "$BB" chown 0:0 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
+    "$BB" mv -f "$tmp" "$target" || { "$BB" rm -f "$tmp"; return 1; }
+    "$BB" sync
+    return 0
+}
+
+build_runtime_from_persistent() {
+    PERSIST_COUNT=0
+    ensure_persistent_store || return 1
+
+    tmp="$STATE/.known-networks.$"
+    write_base_conf "$tmp" || return 1
+
+    for saved in "$WIFI_WLAN_NETWORKS"/*.conf; do
+        [ -f "$saved" ] || continue
+        "$BB" grep -qx '# albus-wifi-db=1' "$saved" 2>/dev/null || continue
+        "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$saved" 2>/dev/null || continue
+        append_network_block "$saved" "$tmp"
+        PERSIST_COUNT=$((PERSIST_COUNT + 1))
+    done
+
+    if [ "$PERSIST_COUNT" -eq 0 ]; then
+        "$BB" rm -f "$tmp"
+        return 1
+    fi
+
+    "$BB" chmod 600 "$tmp" 2>/dev/null || true
+    "$BB" mv -f "$tmp" "$CONF" || { "$BB" rm -f "$tmp"; return 1; }
+    return 0
+}
+
+copy_candidate_to_runtime() {
+    source=$1
+    tmp="$STATE/.runtime.$"
+    "$BB" cp "$source" "$tmp" || return 1
+    "$BB" chmod 600 "$tmp" 2>/dev/null || true
+    "$BB" mv -f "$tmp" "$CONF" || { "$BB" rm -f "$tmp"; return 1; }
+}
+
+restore_known_after_failure() {
+    "$BB" rm -f "$CANDIDATE" 2>/dev/null || true
+
+    build_runtime_from_persistent >/dev/null 2>&1 || return 0
+    start_supplicant "$CONF" >/dev/null 2>&1 || return 0
+    if wait_connected 12; then
+        do_dhcp >/dev/null 2>&1 || true
+    fi
+}
+
+commit_validated_network() {
+    security=$1
+    ssid=$2
+    source=$3
+
+    copy_candidate_to_runtime "$source" || return 1
+
+    if persist_network "$security" "$ssid" "$source"; then
+        echo "Saved validated network in $WIFI_WLAN_DIR: $ssid"
+    else
+        echo "Connected, but /data persistent storage is unavailable; profile remains temporary."
+    fi
+
+    "$BB" rm -f "$CANDIDATE" 2>/dev/null || true
+    return 0
 }
 
 require_root() {
@@ -392,22 +574,22 @@ start_supplicant() {
     require_payload
     [ ! -f "$HOTSPOT_MARKER" ] || clear_hotspot_state
 
-    [ -f "$CONF" ] || {
-        cat > "$CONF" <<'EOF'
-ctrl_interface=/tmp/albus-wifi/ctrl
-update_config=1
-ap_scan=1
-EOF
-    }
+    supplicant_conf="$CONF"
+    [ "$#" -ge 1 ] && supplicant_conf=$1
+
+    if [ ! -f "$supplicant_conf" ]; then
+        [ "$supplicant_conf" = "$CONF" ] || return 1
+        write_base_conf "$CONF" || return 1
+    fi
 
     stop_supplicant
     rm -rf "$CTRL"
     mkdir -p "$CTRL"
     : > "$WPA_LOG"
 
-    "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D nl80211,wext         -c "$CONF" -C "$CTRL" -f "$WPA_LOG" || {
+    "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D nl80211,wext         -c "$supplicant_conf" -C "$CTRL" -f "$WPA_LOG" || {
         log "nl80211,wext startup failed; retrying wext only"
-        "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D wext             -c "$CONF" -C "$CTRL" -f "$WPA_LOG"
+        "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D wext             -c "$supplicant_conf" -C "$CTRL" -f "$WPA_LOG"
     }
 
     i=0
@@ -423,8 +605,9 @@ EOF
 }
 
 wait_connected() {
+    limit=${1:-30}
     i=0
-    while [ "$i" -lt 30 ]; do
+    while [ "$i" -lt "$limit" ]; do
         state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
             "$BB" sed -n 's/^wpa_state=//p')
         [ "$state" = COMPLETED ] && return 0
@@ -498,6 +681,7 @@ make_hotspot_conf() {
     ssid=$1
     pass=$2
     channel=$3
+    target=${4:-$HOTSPOT_CONF}
 
     [ -n "$ssid" ] && [ "${#ssid}" -le 32 ] || {
         echo "Hotspot SSID must contain 1-32 characters." >&2
@@ -532,9 +716,193 @@ make_hotspot_conf() {
         printf '%s\n' 'wpa_key_mgmt=WPA-PSK'
         printf '%s\n' 'rsn_pairwise=CCMP'
         printf 'wpa_passphrase=%s\n' "$pass"
-    } > "$HOTSPOT_CONF" || return 1
+    } > "$target" || return 1
 
-    "$BB" chmod 600 "$HOTSPOT_CONF" 2>/dev/null || true
+    "$BB" chmod 600 "$target" 2>/dev/null || true
+}
+
+persist_hotspot_conf() {
+    source=$1
+    ensure_persistent_store || return 1
+
+    tmp="$WIFI_AP_DIR/.hotspot.$"
+    {
+        printf '%s\n' '# albus-hotspot-db=1'
+        printf '%s\n' '# interface=ap0'
+        "$BB" cat "$source"
+    } > "$tmp" || return 1
+
+    "$BB" chmod 600 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
+    "$BB" chown 0:0 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
+    "$BB" mv -f "$tmp" "$WIFI_AP_CONF" || { "$BB" rm -f "$tmp"; return 1; }
+    "$BB" sync
+}
+
+hotspot_saved_value() {
+    key=$1
+    ensure_persistent_store || return 1
+    [ -f "$WIFI_AP_CONF" ] || return 1
+    "$BB" sed -n "s/^${key}=//p" "$WIFI_AP_CONF" 2>/dev/null |
+        "$BB" awk 'NR == 1 { print; exit }'
+}
+
+load_saved_hotspot_request() {
+    ensure_persistent_store || return 1
+    [ -f "$WIFI_AP_CONF" ] || return 1
+    "$BB" grep -qx '# albus-hotspot-db=1' "$WIFI_AP_CONF" 2>/dev/null || return 1
+
+    HOTSPOT_REQUEST_SSID=$(hotspot_saved_value ssid) || return 1
+    HOTSPOT_REQUEST_PASS=$(hotspot_saved_value wpa_passphrase) || return 1
+    HOTSPOT_REQUEST_CHANNEL=$(hotspot_saved_value channel) || return 1
+
+    [ -n "$HOTSPOT_REQUEST_SSID" ] &&
+    [ -n "$HOTSPOT_REQUEST_PASS" ] &&
+    [ -n "$HOTSPOT_REQUEST_CHANNEL" ]
+}
+
+resolve_hotspot_request() {
+    case "$#" in
+        0)
+            load_saved_hotspot_request || {
+                echo "No saved ap0 hotspot. Create one with: wifi hotspot create \"SSID\" \"PASSWORD\" [CHANNEL]"
+                return 1
+            }
+            ;;
+        2|3)
+            HOTSPOT_REQUEST_SSID=$1
+            HOTSPOT_REQUEST_PASS=$2
+            HOTSPOT_REQUEST_CHANNEL=${3:-6}
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+    return 0
+}
+
+cmd_hotspot_create() {
+    case "$#" in
+        2|3) ;;
+        *)
+            echo 'usage: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+            return 2
+            ;;
+    esac
+
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $WIFI_AP_DIR"
+        return 1
+    }
+
+    [ ! -f "$WIFI_AP_CONF" ] || {
+        echo "A saved ap0 hotspot already exists."
+        echo 'Use: wifi hotspot config [ssid "NEW"] [password "NEW"] [channel N]'
+        echo 'Or:  wifi hotspot delete'
+        return 1
+    }
+
+    channel=${3:-6}
+    candidate="$STATE/hotspot.persist.$"
+    make_hotspot_conf "$1" "$2" "$channel" "$candidate" || {
+        "$BB" rm -f "$candidate" 2>/dev/null || true
+        return 1
+    }
+
+    persist_hotspot_conf "$candidate" || {
+        "$BB" rm -f "$candidate" 2>/dev/null || true
+        echo "Could not save ap0 configuration."
+        return 1
+    }
+    "$BB" rm -f "$candidate" 2>/dev/null || true
+
+    echo "Saved ap0 hotspot: $1"
+    echo "Channel: $channel"
+    echo "Use 'wifi hotspot start-vif' or 'wifi hotspot repeater' with no arguments."
+}
+
+cmd_hotspot_config() {
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $WIFI_AP_DIR"
+        return 1
+    }
+    [ -f "$WIFI_AP_CONF" ] || {
+        echo 'No saved ap0 hotspot. Create one with: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+        return 1
+    }
+
+    saved_ssid=$(hotspot_saved_value ssid) || return 1
+    saved_pass=$(hotspot_saved_value wpa_passphrase) || return 1
+    saved_channel=$(hotspot_saved_value channel) || return 1
+
+    if [ "$#" -eq 0 ]; then
+        echo "--- saved ap0 hotspot ---"
+        echo "ssid: $saved_ssid"
+        echo "security: WPA2-PSK/CCMP"
+        echo "channel: $saved_channel"
+        echo "password: configured (${#saved_pass} characters; hidden)"
+        [ -f "$HOTSPOT_MARKER" ] && echo "runtime: active; saved changes apply on next start" || echo "runtime: inactive"
+        return 0
+    fi
+
+    new_ssid=$saved_ssid
+    new_pass=$saved_pass
+    new_channel=$saved_channel
+
+    while [ "$#" -gt 0 ]; do
+        key=$1
+        shift
+        [ "$#" -gt 0 ] || {
+            echo "Missing value for hotspot config key: $key"
+            return 2
+        }
+        value=$1
+        shift
+        case "$key" in
+            ssid) new_ssid=$value ;;
+            password|pass) new_pass=$value ;;
+            channel) new_channel=$value ;;
+            *)
+                echo "Unknown hotspot config key: $key"
+                echo "Supported keys: ssid, password, channel"
+                return 2
+                ;;
+        esac
+    done
+
+    candidate="$STATE/hotspot.persist.$"
+    make_hotspot_conf "$new_ssid" "$new_pass" "$new_channel" "$candidate" || {
+        "$BB" rm -f "$candidate" 2>/dev/null || true
+        return 1
+    }
+    persist_hotspot_conf "$candidate" || {
+        "$BB" rm -f "$candidate" 2>/dev/null || true
+        return 1
+    }
+    "$BB" rm -f "$candidate" 2>/dev/null || true
+    echo "Updated saved ap0 hotspot."
+    cmd_hotspot_config
+}
+
+cmd_hotspot_delete() {
+    [ "$#" -eq 0 ] || {
+        echo "usage: wifi hotspot delete"
+        return 2
+    }
+
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $WIFI_AP_DIR"
+        return 1
+    }
+    [ -f "$WIFI_AP_CONF" ] || {
+        echo "No saved ap0 hotspot to delete."
+        return 1
+    }
+
+    deleted_ssid=$(hotspot_saved_value ssid 2>/dev/null || true)
+    "$BB" rm -f "$WIFI_AP_CONF" || return 1
+    "$BB" sync
+    echo "Deleted saved ap0 hotspot: ${deleted_ssid:-<unknown>}"
+    [ -f "$HOTSPOT_MARKER" ] && echo "The running hotspot was not stopped."
 }
 
 stop_udhcpd() {
@@ -816,13 +1184,10 @@ cmd_hotspot_probe_vif() {
 }
 
 cmd_hotspot_start_vif() {
-    case "$#" in
-        2|3) ;;
-        *)
-            echo 'usage: wifi hotspot start-vif "SSID" "PASSWORD" [CHANNEL]'
-            return 2
-            ;;
-    esac
+    resolve_hotspot_request "$@" || {
+        [ "$#" -eq 1 ] && echo 'usage: wifi hotspot start-vif ["SSID" "PASSWORD" [CHANNEL]]'
+        return 2
+    }
 
     require_hotspot_payload
     [ ! -f "$HOTSPOT_MARKER" ] || {
@@ -832,7 +1197,7 @@ cmd_hotspot_start_vif() {
 
     prepare || return 1
 
-    requested_channel=${3:-6}
+    requested_channel=$HOTSPOT_REQUEST_CHANNEL
     channel=$requested_channel
     sta_state=""
     if [ -S "$CTRL/$IFACE" ]; then
@@ -852,7 +1217,7 @@ cmd_hotspot_start_vif() {
         channel=$sta_channel
     fi
 
-    make_hotspot_conf "$1" "$2" "$channel" || return 1
+    make_hotspot_conf "$HOTSPOT_REQUEST_SSID" "$HOTSPOT_REQUEST_PASS" "$channel" "$HOTSPOT_CONF" || return 1
 
     if ! create_hotspot_vif; then
         echo "Could not create AP VIF $HOTSPOT_IFACE."
@@ -899,13 +1264,10 @@ cmd_hotspot_start_vif() {
 }
 
 cmd_hotspot_repeater() {
-    case "$#" in
-        2|3) ;;
-        *)
-            echo 'usage: wifi hotspot repeater "SSID" "PASSWORD" [CHANNEL]'
-            return 2
-            ;;
-    esac
+    resolve_hotspot_request "$@" || {
+        [ "$#" -eq 1 ] && echo 'usage: wifi hotspot repeater ["SSID" "PASSWORD" [CHANNEL]]'
+        return 2
+    }
 
     require_repeater_payload
     [ ! -f "$HOTSPOT_MARKER" ] || {
@@ -915,7 +1277,7 @@ cmd_hotspot_repeater() {
 
     prepare || return 1
 
-    requested_channel=${3:-6}
+    requested_channel=$HOTSPOT_REQUEST_CHANNEL
     channel=$requested_channel
     sta_state=""
     if [ -S "$CTRL/$IFACE" ]; then
@@ -941,7 +1303,7 @@ cmd_hotspot_repeater() {
         channel=$sta_channel
     fi
 
-    make_hotspot_conf "$1" "$2" "$channel" || return 1
+    make_hotspot_conf "$HOTSPOT_REQUEST_SSID" "$HOTSPOT_REQUEST_PASS" "$channel" "$HOTSPOT_CONF" || return 1
 
     if ! create_hotspot_vif; then
         echo "Could not create AP VIF $HOTSPOT_IFACE."
@@ -1072,8 +1434,9 @@ escape_wpa_string() {
 make_psk_conf() {
     ssid=$(escape_wpa_string "$1")
     pass=$(escape_wpa_string "$2")
+    target=${3:-$CONF}
 
-    cat > "$CONF" <<EOF
+    cat > "$target" <<EOF
 ctrl_interface=/tmp/albus-wifi/ctrl
 update_config=1
 ap_scan=1
@@ -1082,12 +1445,13 @@ network={
     psk="$pass"
 }
 EOF
-    chmod 600 "$CONF"
+    chmod 600 "$target"
 }
 
 make_open_conf() {
     ssid=$(escape_wpa_string "$1")
-    cat > "$CONF" <<EOF
+    target=${2:-$CONF}
+    cat > "$target" <<EOF
 ctrl_interface=/tmp/albus-wifi/ctrl
 update_config=1
 ap_scan=1
@@ -1096,13 +1460,14 @@ network={
     key_mgmt=NONE
 }
 EOF
-    chmod 600 "$CONF"
+    chmod 600 "$target"
 }
 
 make_sae_conf() {
     ssid=$(escape_wpa_string "$1")
     pass=$(escape_wpa_string "$2")
-    cat > "$CONF" <<EOF
+    target=${3:-$CONF}
+    cat > "$target" <<EOF
 ctrl_interface=/tmp/albus-wifi/ctrl
 update_config=1
 ap_scan=1
@@ -1113,7 +1478,7 @@ network={
     ieee80211w=2
 }
 EOF
-    chmod 600 "$CONF"
+    chmod 600 "$target"
 }
 
 cmd_up() {
@@ -1121,11 +1486,29 @@ cmd_up() {
         echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
         return 1
     }
-    start_supplicant || {
+
+    if build_runtime_from_persistent; then
+        echo "Loaded $PERSIST_COUNT saved wlan network(s) from $WIFI_WLAN_DIR"
+    fi
+
+    start_supplicant "$CONF" || {
         echo "wpa_supplicant did not start. Run: wifi logs"
         return 1
     }
     echo "Wi-Fi ready on $IFACE"
+
+    if "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$CONF" 2>/dev/null; then
+        if wait_connected 25; then
+            if do_dhcp; then
+                echo "Wi-Fi connection and DHCP restored on $IFACE"
+            else
+                echo "Wi-Fi reassociated, but DHCP failed. Run: wifi dhcp; wifi logs"
+                return 1
+            fi
+        else
+            echo "Wi-Fi ready; no saved network associated within the timeout"
+        fi
+    fi
 }
 
 cmd_scan() {
@@ -1145,16 +1528,24 @@ cmd_connect() {
         return 2
     }
 
+    ssid=$1
     prepare || return 1
-    make_psk_conf "$1" "$2"
-    start_supplicant || return 1
+    make_psk_conf "$ssid" "$2" "$CANDIDATE" || return 1
+    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+    start_supplicant "$CANDIDATE" || { "$BB" rm -f "$CANDIDATE"; return 1; }
 
-    if ! wait_connected; then
-        echo "Association timed out. Run: wifi status; wifi logs"
+    if ! wait_connected 30; then
+        echo "Association/authentication failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    if ! do_dhcp; then
+        echo "Association succeeded but DHCP failed. Network was not saved."
+        restore_known_after_failure
         return 1
     fi
 
-    do_dhcp || return 1
+    commit_validated_network "WPA-PSK" "$ssid" "$CANDIDATE" || return 1
     cmd_status
 }
 
@@ -1164,16 +1555,24 @@ cmd_connect_open() {
         return 2
     }
 
+    ssid=$1
     prepare || return 1
-    make_open_conf "$1"
-    start_supplicant || return 1
+    make_open_conf "$ssid" "$CANDIDATE" || return 1
+    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+    start_supplicant "$CANDIDATE" || { "$BB" rm -f "$CANDIDATE"; return 1; }
 
-    if ! wait_connected; then
-        echo "Association timed out. Run: wifi status; wifi logs"
+    if ! wait_connected 30; then
+        echo "Open-network association failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    if ! do_dhcp; then
+        echo "Association succeeded but DHCP failed. Network was not saved."
+        restore_known_after_failure
         return 1
     fi
 
-    do_dhcp || return 1
+    commit_validated_network "OPEN" "$ssid" "$CANDIDATE" || return 1
     cmd_status
 }
 
@@ -1183,17 +1582,99 @@ cmd_connect_sae() {
         return 2
     }
 
+    ssid=$1
     prepare || return 1
-    make_sae_conf "$1" "$2"
-    start_supplicant || return 1
+    make_sae_conf "$ssid" "$2" "$CANDIDATE" || return 1
+    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+    start_supplicant "$CANDIDATE" || { "$BB" rm -f "$CANDIDATE"; return 1; }
 
-    if ! wait_connected; then
-        echo "SAE association timed out. Run: wifi status; wifi logs"
+    if ! wait_connected 30; then
+        echo "SAE authentication failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    if ! do_dhcp; then
+        echo "SAE association succeeded but DHCP failed. Network was not saved."
+        restore_known_after_failure
         return 1
     fi
 
-    do_dhcp || return 1
+    commit_validated_network "SAE" "$ssid" "$CANDIDATE" || return 1
     cmd_status
+}
+
+cmd_networks() {
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $WIFI_WLAN_DIR"
+        return 1
+    }
+
+    count=0
+    echo "Saved wlan networks:"
+    for saved in "$WIFI_WLAN_NETWORKS"/*.conf; do
+        [ -f "$saved" ] || continue
+        security=$("$BB" sed -n 's/^# security=//p' "$saved" | "$BB" awk 'NR == 1 { print; exit }')
+        ssid=$("$BB" awk '
+            /^[[:space:]]*ssid="/ {
+                line=$0
+                sub(/^[[:space:]]*ssid="/, "", line)
+                sub(/"[[:space:]]*$/, "", line)
+                print line
+                exit
+            }
+        ' "$saved")
+        [ -n "$security" ] || security=UNKNOWN
+        [ -n "$ssid" ] || ssid="<unknown>"
+        count=$((count + 1))
+        printf '%s - [%s] %s\n' "$count" "$security" "$ssid"
+    done
+    [ "$count" -gt 0 ] || echo "(none)"
+}
+
+cmd_forget() {
+    [ "$#" -ge 1 ] || {
+        echo 'usage: wifi forget "SSID"'
+        return 2
+    }
+    ssid=$1
+
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $WIFI_WLAN_DIR"
+        return 1
+    }
+
+    nid=$(network_id "$ssid") || return 1
+    saved="$WIFI_WLAN_NETWORKS/$nid.conf"
+    [ -f "$saved" ] || {
+        echo "No saved wlan network named: $ssid"
+        return 1
+    }
+
+    current=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^ssid=//p')
+    "$BB" rm -f "$saved" || return 1
+    "$BB" sync
+
+    if [ "$current" = "$ssid" ]; then
+        cmd_disconnect
+    fi
+
+    if ! build_runtime_from_persistent; then
+        write_base_conf "$CONF"
+    fi
+    echo "Forgot wlan network: $ssid"
+}
+
+cmd_forget_all() {
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $WIFI_WLAN_DIR"
+        return 1
+    }
+
+    "$BB" rm -f "$WIFI_WLAN_NETWORKS"/*.conf 2>/dev/null || true
+    "$BB" sync
+    cmd_disconnect
+    write_base_conf "$CONF"
+    echo "Forgot all saved wlan networks."
 }
 
 cmd_status() {
@@ -1299,9 +1780,16 @@ Recovery Wi-Fi (Motorola albus)
   wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK
   wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE
   wifi connect-open "SSID"
+  wifi networks
+  wifi forget "SSID"
+  wifi forget-all
+  wifi hotspot create "SSID" "PASSWORD" [CHANNEL]    # persist under /data/local/wifi/ap0
+  wifi hotspot config                                  # show saved ap0 config
+  wifi hotspot config ssid|password|channel VALUE
+  wifi hotspot delete
   wifi hotspot probe-vif
-  wifi hotspot start-vif "SSID" "PASSWORD" [CHANNEL]  # AP+STA concurrency, no NAT
-  wifi hotspot repeater "SSID" "PASSWORD" [CHANNEL]   # AP+STA with internet/NAT
+  wifi hotspot start-vif ["SSID" "PASSWORD" [CHANNEL]] # AP+STA, no NAT; no args = saved ap0
+  wifi hotspot repeater ["SSID" "PASSWORD" [CHANNEL]]  # AP+STA+NAT; no args = saved ap0
   wifi hotspot status
   wifi hotspot clients
   wifi hotspot stop
@@ -1328,10 +1816,16 @@ case "$cmd" in
     connect) cmd_connect "$@" ;;
     connect-sae) cmd_connect_sae "$@" ;;
     connect-open) cmd_connect_open "$@" ;;
+    networks) cmd_networks ;;
+    forget) cmd_forget "$@" ;;
+    forget-all) cmd_forget_all ;;
     hotspot)
         sub=${1:-status}
         [ "$#" -gt 0 ] && shift || true
         case "$sub" in
+            create) cmd_hotspot_create "$@" ;;
+            config) cmd_hotspot_config "$@" ;;
+            delete) cmd_hotspot_delete "$@" ;;
             probe-vif) cmd_hotspot_probe_vif ;;
             start-vif) cmd_hotspot_start_vif "$@" ;;
             repeater) cmd_hotspot_repeater "$@" ;;
