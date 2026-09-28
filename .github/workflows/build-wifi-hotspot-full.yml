@@ -147,11 +147,13 @@ jobs:
         run: |
           set -euo pipefail
           grep -qx 'CONFIG_UDHCPD=y' recovery-wifi/out/busybox.config
-          for symbol in SHA256SUM CP MV CHOWN SYNC; do
+          for symbol in SHA256SUM CP MV CHOWN SYNC TIMEOUT; do
             grep -qx "CONFIG_${symbol}=y" recovery-wifi/out/busybox.config
           done
 
           sh -n recovery-wifi/wifi
+          grep -Fq 'timeout 12 "$WPA"' recovery-wifi/wifi
+          grep -Fq '[ -s "$STATE/lease.env" ]' recovery-wifi/wifi
           grep -q 'wifi_hotspot=separate-ap0-vif-concurrency-and-repeater-modes' artifacts/build-info.txt
           grep -q 'wifi_repeater_bands=2.4GHz-and-5GHz-single-channel' artifacts/build-info.txt
           grep -q 'wifi_hotspot_nat=repeater-only-ap0-to-wlan0-masquerade-with-private-chains' artifacts/build-info.txt

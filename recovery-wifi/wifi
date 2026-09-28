@@ -597,21 +597,38 @@ start_supplicant() {
     mkdir -p "$CTRL"
     : > "$WPA_LOG"
 
-    "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D nl80211,wext         -c "$supplicant_conf" -C "$CTRL" -f "$WPA_LOG" || {
-        log "nl80211,wext startup failed; retrying wext only"
-        "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D wext             -c "$supplicant_conf" -C "$CTRL" -f "$WPA_LOG"
+    start_one_supplicant() {
+        drivers=$1
+        "$BB" timeout 12 "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D "$drivers" \
+            -c "$supplicant_conf" -C "$CTRL" -f "$WPA_LOG"
     }
 
+    if ! start_one_supplicant nl80211,wext; then
+        stop_supplicant
+        log "nl80211,wext startup failed or timed out; retrying wext only"
+        start_one_supplicant wext || {
+            stop_supplicant
+            log "wpa_supplicant startup failed or timed out"
+            return 1
+        }
+    fi
+
     i=0
-    while [ "$i" -lt 10 ] && [ ! -S "$CTRL/$IFACE" ]; do
-        sleep 1
+    while [ "$i" -lt 10 ]; do
+        [ -S "$CTRL/$IFACE" ] && return 0
+        pid=""
+        [ -f "$STATE/wpa.pid" ] && pid=$(cat "$STATE/wpa.pid" 2>/dev/null || true)
+        case "$pid" in
+            ''|*[!0-9]*) ;;
+            *) kill -0 "$pid" 2>/dev/null || break ;;
+        esac
+        "$BB" sleep 1
         i=$((i + 1))
     done
 
-    [ -S "$CTRL/$IFACE" ] || {
-        log "supplicant control socket did not appear"
-        return 1
-    }
+    log "supplicant control socket did not appear within timeout"
+    stop_supplicant
+    return 1
 }
 
 wait_connected() {
@@ -629,7 +646,40 @@ wait_connected() {
 
 do_dhcp() {
     require_payload
-    "$BB" udhcpc -i "$IFACE" -s "$UDHCPC_SCRIPT"         -p "$STATE/udhcpc.pid" -t 8 -T 3 -A 1 -q
+
+    "$BB" rm -f "$STATE/lease.env" "$STATE/udhcpc.pid" 2>/dev/null || true
+
+    "$BB" udhcpc -f -n -i "$IFACE" -s "$UDHCPC_SCRIPT" \
+        -p "$STATE/udhcpc.pid" -t 8 -T 3 -A 1 -q &
+    dhcp_pid=$!
+
+    i=0
+    while [ "$i" -lt 30 ]; do
+        if [ -s "$STATE/lease.env" ]; then
+            if kill -0 "$dhcp_pid" 2>/dev/null; then
+                kill "$dhcp_pid" 2>/dev/null || true
+            fi
+            wait "$dhcp_pid" 2>/dev/null || true
+            "$BB" rm -f "$STATE/udhcpc.pid" 2>/dev/null || true
+            return 0
+        fi
+
+        if ! kill -0 "$dhcp_pid" 2>/dev/null; then
+            wait "$dhcp_pid" 2>/dev/null || true
+            break
+        fi
+
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+
+    if kill -0 "$dhcp_pid" 2>/dev/null; then
+        kill "$dhcp_pid" 2>/dev/null || true
+        wait "$dhcp_pid" 2>/dev/null || true
+    fi
+    "$BB" rm -f "$STATE/udhcpc.pid" 2>/dev/null || true
+
+    [ -s "$STATE/lease.env" ]
 }
 
 delete_hotspot_vif() {
