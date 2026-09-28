@@ -45,6 +45,7 @@ mkdir -p "$WIFI_REPACK_DIR"
     --busybox "$WIFI_OUT/busybox.albus" \
     --iptables "$WIFI_OUT/iptables.albus" \
     --udhcpc-script "$WIFI_OUT/wifi-udhcpc.script" \
+    --time-sync "$WIFI_OUT/recovery-time-sync-albus" \
     --output "$WIFI_OVERLAY_RAMDISK"
 
   cat "$WIFI_OVERLAY_RAMDISK" >> ramdisk.cpio
@@ -124,6 +125,9 @@ sed -i \
   printf 'wifi_ap0_persistence=/data/local/wifi/ap0/hotspot.conf\n'
   printf 'wifi_hotspot_persistence=data-local-wifi-ap0-v1\n'
   printf 'wifi_hotspot_nat=repeater-only-ap0-to-wlan0-masquerade-with-private-chains\n'
+  printf 'wifi_control_watchdogs=wpa-cli-2s-iptables-5s-data-8s-mount-5s-sync-5s\n'
+  printf 'wifi_dns_fallback=busybox-nslookup-ipv4\n'
+  printf 'wifi_time_sync=one-shot-ntp-last-good-under-data-local-wifi\n'
   printf 'wifi_overlay_size=%s\n' "$(stat -c '%s' "$WIFI_OVERLAY_RAMDISK")"
 } >> "$ARTIFACT_DIR/build-info.txt"
 
@@ -137,6 +141,7 @@ cp "$WIFI_OUT/wcnss-recovery-albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/busybox.albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/iptables.albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/wifi-udhcpc.script" "$ARTIFACT_DIR/"
+cp "$WIFI_OUT/recovery-time-sync-albus" "$ARTIFACT_DIR/"
 
 (
   cd "$ARTIFACT_DIR"
@@ -156,6 +161,7 @@ cp "$WIFI_OUT/wifi-udhcpc.script" "$ARTIFACT_DIR/"
     busybox.albus \
     iptables.albus \
     wifi-udhcpc.script \
+    recovery-time-sync-albus \
     > SHA256SUMS
 )
 
