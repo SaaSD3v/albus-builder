@@ -147,13 +147,40 @@ jobs:
         run: |
           set -euo pipefail
           grep -qx 'CONFIG_UDHCPD=y' recovery-wifi/out/busybox.config
-          for symbol in SHA256SUM CP MV CHOWN SYNC TIMEOUT; do
+          for symbol in SHA256SUM CP MV CHOWN SYNC TIMEOUT DATE NTPD NSLOOKUP; do
             grep -qx "CONFIG_${symbol}=y" recovery-wifi/out/busybox.config
           done
 
           sh -n recovery-wifi/wifi
+          sh -n recovery-wifi/wifi-udhcpc.script
+          sh -n recovery-wifi/recovery-time-sync-albus
           grep -Fq 'timeout 12 "$WPA"' recovery-wifi/wifi
           grep -Fq '[ -s "$STATE/lease.env" ]' recovery-wifi/wifi
+          grep -Fq 'WPA_CLI_TIMEOUT=${WIFI_WPA_CLI_TIMEOUT:-2}' recovery-wifi/wifi
+          grep -Fq 'CONTROL_TIMEOUT=${WIFI_CONTROL_TIMEOUT:-5}' recovery-wifi/wifi
+          grep -Fq 'DATA_MOUNT_TIMEOUT=${WIFI_DATA_MOUNT_TIMEOUT:-8}' recovery-wifi/wifi
+          grep -Fq 'MOUNT_TIMEOUT=${WIFI_MOUNT_TIMEOUT:-5}' recovery-wifi/wifi
+          grep -Fq 'SYNC_TIMEOUT=${WIFI_SYNC_TIMEOUT:-5}' recovery-wifi/wifi
+          grep -Fq 'stop_child_bounded "$dhcp_pid"' recovery-wifi/wifi
+          grep -Fq 'stage=persistence checking saved wlan profiles' recovery-wifi/wifi
+          grep -Fq 'stage=supplicant starting' recovery-wifi/wifi
+          grep -Fq 'stage=association waiting up to 25s' recovery-wifi/wifi
+          grep -Fq 'stage=dhcp acquiring lease' recovery-wifi/wifi
+          grep -Fq 'Static resolver fallback:' recovery-wifi/wifi
+          grep -Fq 'TIME_SYNC=/sbin/recovery-time-sync-albus' recovery-wifi/wifi
+          grep -Fq 'if [ "$#" -eq 0 ]; then' recovery-wifi/wifi
+          if grep -Fq '"$WPACLI" -p' recovery-wifi/wifi; then
+            echo "Direct unbounded wpa_cli invocation remains"
+            exit 1
+          fi
+          if grep -Fq '"$IPTABLES" -' recovery-wifi/wifi; then
+            echo "Direct unbounded iptables invocation remains"
+            exit 1
+          fi
+          if grep -Fq 'twrp mount data' recovery-wifi/wifi; then
+            echo "Unbounded twrp mount data invocation remains"
+            exit 1
+          fi
           grep -q 'wifi_hotspot=separate-ap0-vif-concurrency-and-repeater-modes' artifacts/build-info.txt
           grep -q 'wifi_repeater_bands=2.4GHz-and-5GHz-single-channel' artifacts/build-info.txt
           grep -q 'wifi_hotspot_nat=repeater-only-ap0-to-wlan0-masquerade-with-private-chains' artifacts/build-info.txt
@@ -161,6 +188,9 @@ jobs:
           grep -q 'wifi_wlan_persistence=/data/local/wifi/wlan/networks' artifacts/build-info.txt
           grep -q 'wifi_ap0_persistence=/data/local/wifi/ap0/hotspot.conf' artifacts/build-info.txt
           grep -q 'wifi_hotspot_persistence=data-local-wifi-ap0-v1' artifacts/build-info.txt
+          grep -q 'wifi_control_watchdogs=wpa-cli-2s-iptables-5s-data-8s-mount-5s-sync-5s' artifacts/build-info.txt
+          grep -q 'wifi_dns_fallback=busybox-nslookup-ipv4' artifacts/build-info.txt
+          grep -q 'wifi_time_sync=one-shot-ntp-last-good-under-data-local-wifi' artifacts/build-info.txt
 
           grep -Fq 'WIFI_WLAN_NETWORKS=$WIFI_WLAN_DIR/networks' recovery-wifi/wifi
           grep -Fq 'WIFI_AP_CONF=$WIFI_AP_DIR/hotspot.conf' recovery-wifi/wifi
@@ -202,6 +232,16 @@ jobs:
           grep -Eq 'hostapd v2\.9' hostapd-version.txt
           "$QEMU" recovery-wifi/out/iw.albus --version > iw-version.txt 2>&1 || true
           grep -Eq 'iw version 5\.9' iw-version.txt
+
+          "$QEMU" recovery-wifi/out/busybox.albus --list > busybox-applets.txt
+          for applet in awk cat chmod chown cp date grep ifconfig ip mkdir mount mv nslookup ntpd ping \
+                        readlink rm sed sha256sum sleep sync tail tee timeout udhcpc udhcpd; do
+            grep -qx "$applet" busybox-applets.txt || {
+              echo "BusyBox Albus binary is missing required applet: $applet"
+              exit 1
+            }
+          done
+          "$QEMU" recovery-wifi/out/busybox.albus timeout --help >/dev/null 2>&1 || true
 
       - name: Upload to GoFile
         run: |
