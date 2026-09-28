@@ -1,0 +1,388 @@
+#!/sbin/sh
+# Clean recovery Wi-Fi bring-up for Motorola albus (MSM8953).
+# Phase 1: firmware/WCNSS/driver only. No supplicant, DHCP or hotspot yet.
+
+set -u
+umask 077
+
+PATH=/sbin:/system/bin:/system/xbin:/vendor/bin:/vendor/bin/hw
+export PATH
+LC_ALL=C
+export LC_ALL
+
+STATE=/tmp/albus-wifi
+FWROOT=$STATE/firmware
+LOG=$STATE/wifi.log
+WCNSS_LOG=$STATE/wcnss-service.log
+WCNSS_PID=$STATE/wcnss-service.pid
+IFACE=${WIFI_IFACE:-wlan0}
+
+SYSTEM_BLOCK=/dev/block/bootdevice/by-name/system
+VENDOR_BLOCK=/dev/block/bootdevice/by-name/oem
+MODEM_BLOCK=/dev/block/bootdevice/by-name/modem
+PERSIST_BLOCK=/dev/block/bootdevice/by-name/persist
+
+FIRMWARE_PATH_NODE=/sys/module/firmware_class/parameters/path
+NV_NODE=/sys/module/wcnsscore/parameters/nv_file
+FWPATH_NODE=/sys/module/wlan/parameters/fwpath
+
+die() {
+    echo "wifi: $*" >&2
+    exit 1
+}
+
+have() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+is_mounted() {
+    grep -q " $1 " /proc/mounts 2>/dev/null
+}
+
+ensure_dir() {
+    [ -d "$1" ] || mkdir -p "$1" || die "could not create $1"
+}
+
+mount_ro_if_needed() {
+    block=$1
+    point=$2
+
+    is_mounted "$point" && return 0
+    [ -e "$block" ] || die "missing block device $block"
+    ensure_dir "$point"
+
+    mount -t ext4 -o ro,nosuid,nodev "$block" "$point" ||
+        die "could not mount $point read-only"
+}
+
+mount_rw_if_needed() {
+    block=$1
+    point=$2
+
+    is_mounted "$point" && return 0
+    [ -e "$block" ] || die "missing block device $block"
+    ensure_dir "$point"
+
+    mount -t ext4 -o rw,nosuid,nodev "$block" "$point" ||
+        mount -t ext4 -o ro,nosuid,nodev "$block" "$point" ||
+        die "could not mount $point"
+}
+
+require_root() {
+    uid=$(id -u 2>/dev/null || echo 1)
+    [ "$uid" = 0 ] || die "run from a root recovery shell"
+}
+
+usage() {
+    cat <<'EOF'
+Albus recovery Wi-Fi (clean bring-up)
+  wifi help       show this help
+  wifi test       inspect the Albus Wi-Fi prerequisites without changing them
+  wifi prepare    mount/stage stock Albus firmware and select the NV file
+  wifi up         prepare WCNSS and bring wlan0 up
+  wifi status     show WCNSS/driver/interface state
+  wifi down       lower wlan0
+  wifi logs       show recovery Wi-Fi and kernel WLAN logs
+
+Client association/DHCP will be added only after wlan0 bring-up is validated.
+EOF
+}
+
+print_item() {
+    label=$1
+    path=$2
+    if [ -e "$path" ]; then
+        echo "OK   $label: $path"
+    else
+        echo "MISS $label: $path"
+    fi
+}
+
+cmd_test() {
+    echo "Albus Wi-Fi prerequisite test"
+    print_item "system block" "$SYSTEM_BLOCK"
+    print_item "vendor/oem block" "$VENDOR_BLOCK"
+    print_item "modem block" "$MODEM_BLOCK"
+    print_item "persist block" "$PERSIST_BLOCK"
+    print_item "wcnss_ctrl" /dev/wcnss_ctrl
+    print_item "wcnss_wlan" /dev/wcnss_wlan
+    print_item "firmware_class.path" "$FIRMWARE_PATH_NODE"
+    print_item "wcnsscore nv_file" "$NV_NODE"
+    print_item "wlan fwpath" "$FWPATH_NODE"
+
+    echo
+    echo "Mount state:"
+    for p in /system /vendor /vendor/firmware_mnt /mnt/vendor/persist; do
+        if is_mounted "$p"; then
+            echo "MOUNTED $p"
+        else
+            echo "UNMOUNTED $p"
+        fi
+    done
+
+    echo
+    echo "Current interfaces:"
+    ls -1 /sys/class/net 2>/dev/null || true
+
+    echo
+    echo "Stock Wi-Fi payload visible now:"
+    for f in         /vendor/bin/wcnss_service         /vendor/firmware/wlan/prima/WCNSS_qcom_cfg.ini         /vendor/etc/wifi/WCNSS_qcom_wlan_nv.bin         /vendor/etc/wifi/WCNSS_qcom_wlan_nv_Brazil.bin         /vendor/firmware_mnt/image/wcnss.mdt; do
+        print_item "stock" "$f"
+    done
+}
+
+copy_or_link_dir() {
+    srcdir=$1
+    dstdir=$2
+    [ -d "$srcdir" ] || return 0
+    ensure_dir "$dstdir"
+
+    for src in "$srcdir"/*; do
+        [ -e "$src" ] || continue
+        base=${src##*/}
+        ln -sf "$src" "$dstdir/$base" 2>/dev/null || true
+    done
+}
+
+stage_firmware() {
+    rm -rf "$FWROOT"
+    ensure_dir "$FWROOT/wlan/prima"
+
+    # PRONTO/WCNSS PIL images live on the modem partition.
+    copy_or_link_dir /vendor/firmware_mnt/image "$FWROOT"
+
+    # WLAN driver configuration/firmware lives on the Albus OEM/vendor partition.
+    copy_or_link_dir /vendor/firmware/wlan/prima "$FWROOT/wlan/prima"
+    copy_or_link_dir /vendor/etc/firmware/wlan/prima "$FWROOT/wlan/prima"
+
+    # Motorola carrier NV files are shipped under vendor/etc/wifi.
+    if [ -d /vendor/etc/wifi ]; then
+        for src in /vendor/etc/wifi/WCNSS_qcom_wlan_nv*.bin; do
+            [ -e "$src" ] || continue
+            base=${src##*/}
+            ln -sf "$src" "$FWROOT/wlan/prima/$base"
+        done
+    fi
+
+    # Tree-derived fallback only; never replace a valid stock config.
+    if [ ! -e "$FWROOT/wlan/prima/WCNSS_qcom_cfg.ini" ] &&
+       [ -s /sbin/albus-WCNSS_qcom_cfg.ini ]; then
+        cp /sbin/albus-WCNSS_qcom_cfg.ini "$FWROOT/wlan/prima/WCNSS_qcom_cfg.ini"
+    fi
+
+    [ -e "$FWROOT/wlan/prima/WCNSS_qcom_cfg.ini" ] ||
+        die "WCNSS_qcom_cfg.ini was not found"
+    [ -e "$FWROOT/wcnss.mdt" ] ||
+        die "wcnss.mdt was not found on the modem firmware partition"
+}
+
+select_nv() {
+    carrier=$(getprop ro.boot.carrier 2>/dev/null || true)
+
+    case "$carrier" in
+        retbr|timbr|tefbr|oibr|amxbr|niibr)
+            nv=WCNSS_qcom_wlan_nv_Brazil.bin
+            ;;
+        perar|retar|tefar|amxar)
+            nv=WCNSS_qcom_wlan_nv_Argentina.bin
+            ;;
+        retin|amzin)
+            nv=WCNSS_qcom_wlan_nv_India.bin
+            ;;
+        *)
+            nv=WCNSS_qcom_wlan_nv.bin
+            ;;
+    esac
+
+    if [ ! -e "$FWROOT/wlan/prima/$nv" ]; then
+        nv=WCNSS_qcom_wlan_nv.bin
+    fi
+
+    [ -e "$FWROOT/wlan/prima/$nv" ] ||
+        die "no usable Albus WCNSS NV file was found"
+
+    echo "$nv"
+}
+
+cmd_prepare() {
+    require_root
+    ensure_dir "$STATE"
+    : > "$LOG"
+
+    mount_ro_if_needed "$SYSTEM_BLOCK" /system
+    mount_ro_if_needed "$VENDOR_BLOCK" /vendor
+    mount_ro_if_needed "$MODEM_BLOCK" /vendor/firmware_mnt
+    mount_rw_if_needed "$PERSIST_BLOCK" /mnt/vendor/persist
+
+    if [ ! -e /persist ]; then
+        ln -s /mnt/vendor/persist /persist 2>/dev/null || true
+    fi
+
+    stage_firmware
+
+    [ -w "$FIRMWARE_PATH_NODE" ] ||
+        die "firmware_class.path is not writable"
+    printf '%s' "$FWROOT" > "$FIRMWARE_PATH_NODE" ||
+        die "could not set firmware_class.path"
+
+    nv=$(select_nv)
+    if [ -w "$NV_NODE" ]; then
+        printf '%s' "wlan/prima/$nv" > "$NV_NODE" ||
+            die "could not select WCNSS NV file"
+    else
+        die "wcnsscore nv_file parameter is not writable"
+    fi
+
+    {
+        echo "prepared_at=$(date 2>/dev/null || true)"
+        echo "firmware_path=$FWROOT"
+        echo "nv_file=wlan/prima/$nv"
+        echo "carrier=$(getprop ro.boot.carrier 2>/dev/null || true)"
+    } >> "$LOG"
+
+    echo "Albus Wi-Fi firmware prepared."
+    echo "firmware path: $FWROOT"
+    echo "NV file: wlan/prima/$nv"
+}
+
+start_wcnss_service() {
+    WCNSS_BIN=/vendor/bin/wcnss_service
+    [ -x "$WCNSS_BIN" ] || die "stock /vendor/bin/wcnss_service is missing"
+
+    if pidof wcnss_service >/dev/null 2>&1; then
+        echo "wcnss_service already running."
+        return 0
+    fi
+
+    # Scope Android vendor libraries to this one stock binary only.
+    # Never export LD_LIBRARY_PATH into the recovery shell.
+    ANDROID_ROOT=/system     LD_LIBRARY_PATH=/vendor/lib64:/vendor/lib:/system/lib64:/system/lib     "$WCNSS_BIN" >"$WCNSS_LOG" 2>&1 &
+    echo $! > "$WCNSS_PID"
+
+    sleep 1
+}
+
+cmd_up() {
+    require_root
+    cmd_prepare
+
+    start_wcnss_service
+
+    [ -w "$FWPATH_NODE" ] ||
+        die "wlan fwpath parameter is not writable"
+
+    printf '%s' sta > "$FWPATH_NODE" ||
+        die "could not request WLAN station firmware"
+
+    count=0
+    while [ ! -d "/sys/class/net/$IFACE" ] && [ "$count" -lt 25 ]; do
+        sleep 1
+        count=$((count + 1))
+    done
+
+    if [ ! -d "/sys/class/net/$IFACE" ]; then
+        echo "wifi: wlan0 was not created" >&2
+        echo "wifi: inspect 'wifi logs'" >&2
+        return 1
+    fi
+
+    if have ip; then
+        ip link set "$IFACE" up || die "could not bring $IFACE up"
+    elif have ifconfig; then
+        ifconfig "$IFACE" up || die "could not bring $IFACE up"
+    else
+        die "recovery has neither ip nor ifconfig"
+    fi
+
+    echo "Albus Wi-Fi interface $IFACE is up."
+}
+
+cmd_status() {
+    echo "Albus recovery Wi-Fi status"
+
+    printf 'firmware_class.path: '
+    cat "$FIRMWARE_PATH_NODE" 2>/dev/null || echo "<unavailable>"
+
+    printf 'wcnss nv_file: '
+    cat "$NV_NODE" 2>/dev/null || echo "<unavailable>"
+
+    printf 'wlan fwpath: '
+    cat "$FWPATH_NODE" 2>/dev/null || echo "<unavailable>"
+
+    if pidof wcnss_service >/dev/null 2>&1; then
+        echo "wcnss_service: running"
+    else
+        echo "wcnss_service: not running"
+    fi
+
+    if [ -d "/sys/class/net/$IFACE" ]; then
+        echo "$IFACE: present"
+        if have ip; then
+            ip link show "$IFACE" 2>/dev/null || true
+            ip addr show "$IFACE" 2>/dev/null || true
+        elif have ifconfig; then
+            ifconfig "$IFACE" 2>/dev/null || true
+        fi
+    else
+        echo "$IFACE: not present"
+    fi
+}
+
+cmd_down() {
+    require_root
+
+    if [ -d "/sys/class/net/$IFACE" ]; then
+        if have ip; then
+            ip link set "$IFACE" down 2>/dev/null || true
+        elif have ifconfig; then
+            ifconfig "$IFACE" down 2>/dev/null || true
+        fi
+    fi
+
+    echo "Albus Wi-Fi interface lowered."
+}
+
+cmd_logs() {
+    echo "===== albus wifi state ====="
+    cat "$LOG" 2>/dev/null || true
+
+    echo
+    echo "===== wcnss_service ====="
+    cat "$WCNSS_LOG" 2>/dev/null || true
+
+    echo
+    echo "===== kernel ====="
+    dmesg 2>/dev/null |
+        grep -iE 'wcnss|wlan|pronto|prima|cfg80211|firmware|pil|subsys' |
+        tail -n 300
+}
+
+command=${1:-help}
+case "$command" in
+    help|-h|--help)
+        usage
+        ;;
+    test)
+        cmd_test
+        ;;
+    prepare)
+        cmd_prepare
+        ;;
+    up)
+        cmd_up
+        ;;
+    status)
+        cmd_status
+        ;;
+    down)
+        cmd_down
+        ;;
+    logs)
+        cmd_logs
+        ;;
+    *)
+        echo "Unknown command: $command" >&2
+        usage >&2
+        exit 2
+        ;;
+esac
