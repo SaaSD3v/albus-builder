@@ -4,18 +4,22 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR_PRE="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
+echo "==> Build pinned static Wi-Fi client userspace"
+bash "$ROOT_DIR_PRE/recovery-wifi/build-userspace.sh"
+
 # Build the exact known-good bare recovery first. Source it so the pinned
 # WORK_DIR, MAGISKBOOT, FINAL_IMAGE and verification state remain available.
 # shellcheck disable=SC1091
 source "$ROOT_DIR_PRE/scripts/build-bare.sh"
 
-note "Inject clean Albus recovery Wi-Fi overlay"
+note "Inject complete Albus recovery Wi-Fi client overlay"
 
 readonly WIFI_BASE_IMAGE="${WORK_DIR}/recovery-bare-before-wifi.img"
 readonly WIFI_REPACK_DIR="${WORK_DIR}/wifi-repack"
 readonly WIFI_VERIFY_DIR="${WORK_DIR}/wifi-verify"
 readonly WIFI_BASE_RAMDISK="${WORK_DIR}/ramdisk-bare.lzma"
 readonly WIFI_OVERLAY_RAMDISK="${WORK_DIR}/ramdisk-wifi-overlay.lzma"
+readonly WIFI_OUT="$ROOT_DIR/recovery-wifi/out"
 
 cp "$FINAL_IMAGE" "$WIFI_BASE_IMAGE"
 mkdir -p "$WIFI_REPACK_DIR"
@@ -27,15 +31,17 @@ mkdir -p "$WIFI_REPACK_DIR"
   [[ -f ramdisk.cpio ]] ||
     die "magiskboot did not extract ramdisk.cpio for Wi-Fi overlay"
 
-  # Keep the TeamWin LZMA ramdisk byte-for-byte. Build a second standalone
-  # newc archive using the SAME LZMA-alone parameters and append it. This is
-  # the same multi-member initramfs strategy used by the working Channel path.
   cp ramdisk.cpio "$WIFI_BASE_RAMDISK"
 
   python3 "$ROOT_DIR/recovery-wifi/build-overlay.py" build \
     --base "$WIFI_BASE_RAMDISK" \
     --wifi "$ROOT_DIR/recovery-wifi/wifi" \
     --config "$ROOT_DIR/recovery-wifi/WCNSS_qcom_cfg.ini" \
+    --wpa "$WIFI_OUT/wpa_supplicant.albus" \
+    --wpacli "$WIFI_OUT/wpa_cli.albus" \
+    --wpapass "$WIFI_OUT/wpa_passphrase.albus" \
+    --busybox "$WIFI_OUT/busybox.albus" \
+    --udhcpc-script "$WIFI_OUT/wifi-udhcpc.script" \
     --output "$WIFI_OVERLAY_RAMDISK"
 
   cat "$WIFI_OVERLAY_RAMDISK" >> ramdisk.cpio
@@ -49,7 +55,7 @@ mkdir -p "$WIFI_REPACK_DIR"
 
 [[ -s "$FINAL_IMAGE" ]] || die "Wi-Fi recovery image was not produced"
 
-note "Verify clean Wi-Fi overlay and preserve bare kernel/DT"
+note "Verify complete Wi-Fi overlay and preserve bare kernel/DT"
 
 mkdir -p "$WIFI_VERIFY_DIR"
 (
@@ -70,11 +76,11 @@ mkdir -p "$WIFI_VERIFY_DIR"
     --combined ramdisk.cpio
 )
 
-grep -Fq 'wifi prepare' "$ROOT_DIR/recovery-wifi/wifi" ||
-  die "unexpected /sbin/wifi payload"
+for cmd in prepare up scan connect connect-sae connect-open dhcp status ping disconnect down logs test; do
+  grep -Fq "$cmd" "$ROOT_DIR/recovery-wifi/wifi" ||
+    die "missing Wi-Fi command in controller: $cmd"
+done
 
-# A vendor LD_LIBRARY_PATH is allowed only on the one wcnss_service invocation,
-# never as an exported recovery-wide environment variable.
 if grep -Eq '^[[:space:]]*export[[:space:]]+LD_LIBRARY_PATH' "$ROOT_DIR/recovery-wifi/wifi"; then
   die "Wi-Fi script exports LD_LIBRARY_PATH globally"
 fi
@@ -91,19 +97,25 @@ readonly WIFI_FINAL_SHA256
 
 sed -i \
   -e "s|^recovery_sha256=.*|recovery_sha256=${WIFI_FINAL_SHA256}|" \
-  -e 's|^build_type=.*|build_type=bare-plus-clean-recovery-wifi|' \
+  -e 's|^build_type=.*|build_type=bare-plus-complete-recovery-wifi-client|' \
   "$ARTIFACT_DIR/build-info.txt"
 
 {
   printf 'bare_recovery_before_wifi_sha256=%s\n' "$BARE_WIFI_BASE_SHA256"
-  printf 'wifi_overlay=clean-v2-second-lzma-initramfs\n'
-  printf 'wifi_commands=help,test,prepare,up,status,down,logs\n'
-  printf 'wifi_userspace=stock-recovery-tools-plus-stock-vendor-wcnss\n'
+  printf 'wifi_overlay=client-v1-second-lzma-initramfs\n'
+  printf 'wifi_commands=prepare,up,scan,connect,connect-sae,connect-open,dhcp,status,ping,disconnect,down,logs,test\n'
+  printf 'wifi_userspace=static-wpa-supplicant-2.9-plus-static-busybox-plus-stock-albus-wcnss-service\n'
   printf 'wifi_hotspot=not-included\n'
+  printf 'wifi_overlay_size=%s\n' "$(stat -c '%s' "$WIFI_OVERLAY_RAMDISK")"
 } >> "$ARTIFACT_DIR/build-info.txt"
 
 cp "$ROOT_DIR/recovery-wifi/wifi" "$ARTIFACT_DIR/wifi"
 cp "$ROOT_DIR/recovery-wifi/WCNSS_qcom_cfg.ini" "$ARTIFACT_DIR/WCNSS_qcom_cfg.ini"
+cp "$WIFI_OUT/wpa_supplicant.albus" "$ARTIFACT_DIR/"
+cp "$WIFI_OUT/wpa_cli.albus" "$ARTIFACT_DIR/"
+cp "$WIFI_OUT/wpa_passphrase.albus" "$ARTIFACT_DIR/"
+cp "$WIFI_OUT/busybox.albus" "$ARTIFACT_DIR/"
+cp "$WIFI_OUT/wifi-udhcpc.script" "$ARTIFACT_DIR/"
 
 (
   cd "$ARTIFACT_DIR"
@@ -115,9 +127,15 @@ cp "$ROOT_DIR/recovery-wifi/WCNSS_qcom_cfg.ini" "$ARTIFACT_DIR/WCNSS_qcom_cfg.in
     build-info.txt \
     wifi \
     WCNSS_qcom_cfg.ini \
+    wpa_supplicant.albus \
+    wpa_cli.albus \
+    wpa_passphrase.albus \
+    busybox.albus \
+    wifi-udhcpc.script \
     > SHA256SUMS
 )
 
-printf '\nClean Albus recovery Wi-Fi image completed successfully.\n'
+printf '\nComplete Albus recovery Wi-Fi client image built successfully.\n'
 printf 'recovery.img: %s bytes\n' "$WIFI_FINAL_SIZE"
 printf 'SHA-256: %s\n' "$WIFI_FINAL_SHA256"
+printf 'Wi-Fi overlay: %s bytes\n' "$(stat -c '%s' "$WIFI_OVERLAY_RAMDISK")"
