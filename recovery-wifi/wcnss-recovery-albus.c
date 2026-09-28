@@ -13,6 +13,7 @@
 #define WCNSS_DEVICE "/dev/wcnss_wlan"
 #define CAL_FILE "/tmp/albus-wifi/WCNSS_qcom_wlan_cal.bin"
 #define READY_FILE "/tmp/albus-wifi/wcnss.opened"
+#define CTRL_SENT_FILE "/tmp/albus-wifi/wcnss.ctrl-sent"
 #define CAL_CHUNK (3 * 1024)
 #define WCNSS_USR_HAS_CAL_DATA 2
 
@@ -163,12 +164,26 @@ static void collect_runtime_cal(int fd_dev)
 int main(void)
 {
     struct stat st;
-    int has_cal = (stat(CAL_FILE, &st) == 0 && st.st_size > 0);
+    int has_cal = (stat(CAL_FILE, &st) == 0 &&
+                   st.st_size > 0 && st.st_size <= 64 * 1024);
 
-    fprintf(stderr, "wcnss-recovery-albus: signaling has_cal=%d\n", has_cal);
+    if (access(CTRL_SENT_FILE, F_OK) != 0) {
+        fprintf(stderr, "wcnss-recovery-albus: signaling has_cal=%d\n", has_cal);
 
-    if (send_cal_state(has_cal) < 0)
-        return 1;
+        if (send_cal_state(has_cal) < 0)
+            return 1;
+
+        int ctrl_sent = open(CTRL_SENT_FILE,
+                             O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (ctrl_sent >= 0) {
+            static const char one[] = "1\n";
+            (void)write(ctrl_sent, one, sizeof(one) - 1);
+            close(ctrl_sent);
+        }
+    } else {
+        fprintf(stderr,
+                "wcnss-recovery-albus: control handshake already sent\n");
+    }
 
     /*
      * In the pinned Albus 3.18 kernel, open(/dev/wcnss_wlan) invokes
