@@ -46,6 +46,9 @@ mkdir -p "$WIFI_REPACK_DIR"
     --iptables "$WIFI_OUT/iptables.albus" \
     --udhcpc-script "$WIFI_OUT/wifi-udhcpc.script" \
     --time-sync "$WIFI_OUT/recovery-time-sync-albus" \
+    --rctools "$ROOT_DIR/recovery-wifi/rctools" \
+    --dscheck "$ROOT_DIR/recovery-wifi/ds-recovery-check" \
+    --init-recovery-rc "$ROOT_DIR/recovery-wifi/init.recovery.service.rc" \
     --output "$WIFI_OVERLAY_RAMDISK"
 
   cat "$WIFI_OVERLAY_RAMDISK" >> ramdisk.cpio
@@ -128,6 +131,9 @@ sed -i \
   printf 'wifi_control_watchdogs=wpa-cli-2s-iptables-5s-data-8s-mount-5s-sync-5s\n'
   printf 'wifi_dns_fallback=busybox-nslookup-ipv4\n'
   printf 'wifi_time_sync=one-shot-ntp-last-good-under-data-local-wifi\n'
+  printf 'recovery_frontend=rctools-channel-compatible\n'
+  printf 'recovery_mounts=rctools-direct-auto-ext4-f2fs-vfat-rw-default\n'
+  printf 'twrp_recovery_service=disabled-in-cli-minimal-overlay\n'
   printf 'wifi_overlay_size=%s\n' "$(stat -c '%s' "$WIFI_OVERLAY_RAMDISK")"
 } >> "$ARTIFACT_DIR/build-info.txt"
 
@@ -142,6 +148,9 @@ cp "$WIFI_OUT/busybox.albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/iptables.albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/wifi-udhcpc.script" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/recovery-time-sync-albus" "$ARTIFACT_DIR/"
+cp "$ROOT_DIR/recovery-wifi/rctools" "$ARTIFACT_DIR/"
+cp "$ROOT_DIR/recovery-wifi/ds-recovery-check" "$ARTIFACT_DIR/"
+cp "$ROOT_DIR/recovery-wifi/init.recovery.service.rc" "$ARTIFACT_DIR/"
 
 (
   cd "$ARTIFACT_DIR"
@@ -162,6 +171,9 @@ cp "$WIFI_OUT/recovery-time-sync-albus" "$ARTIFACT_DIR/"
     iptables.albus \
     wifi-udhcpc.script \
     recovery-time-sync-albus \
+    rctools \
+    ds-recovery-check \
+    init.recovery.service.rc \
     > SHA256SUMS
 )
 
