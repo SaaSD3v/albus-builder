@@ -14,7 +14,7 @@ WPA_TAG=hostap_2_9
 OPENSSL_TAG=OpenSSL_1_1_1w
 LIBNL_TAG=libnl3_2_25
 BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
-IPTABLES_COMMIT=9b59ee3221ddef66ae1fe796088019496127f44f # iptables 1.8.0 legacy
+IPTABLES_COMMIT=c16bdec15137b241586310d0e61bc88cc3726004 # iptables 1.6.2 legacy
 
 rm -rf "$OUT" "$SRC" "$PREFIX"
 mkdir -p "$OUT" "$SRC" "$PREFIX"
@@ -103,7 +103,7 @@ echo "==> static legacy iptables for DroidSpaces"
 # call iptables(8), iptables-save and iptables-restore. Build the legacy
 # multi-call binary statically so recovery does not depend on Android /system.
 git init "$SRC/iptables"
-git -C "$SRC/iptables" remote add origin https://github.com/rtchack/iptables.git
+git -C "$SRC/iptables" remote add origin https://github.com/PKRoma/iptables.git
 git -C "$SRC/iptables" fetch --depth=1 origin "$IPTABLES_COMMIT"
 git -C "$SRC/iptables" checkout --detach FETCH_HEAD
 pushd "$SRC/iptables" >/dev/null
@@ -123,9 +123,11 @@ PKG_CONFIG_LIBDIR=/nonexistent ./configure \
   --with-xt-lock-name=/tmp/xtables.lock \
   CC="$CC" \
   CFLAGS='-Os -ffunction-sections -fdata-sections' \
-  LDFLAGS='-static -Wl,--gc-sections'
-make -j"$(nproc)"
-cp iptables/xtables-legacy-multi "$OUT/iptables.albus"
+  LDFLAGS='-Wl,--gc-sections'
+# libtool treats -static as library selection and can still emit a dynamic PIE.
+# Channel's validated recovery build uses -all-static at the program link step.
+make -j"$(nproc)" LDFLAGS='-all-static -Wl,--gc-sections'
+cp iptables/xtables-multi "$OUT/iptables.albus"
 popd >/dev/null
 
 echo "==> static Albus WCNSS helper"
