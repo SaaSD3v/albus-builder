@@ -153,6 +153,7 @@ jobs:
 
           sh -n recovery-wifi/wifi
           grep -q 'wifi_hotspot=separate-ap0-vif-concurrency-and-repeater-modes' artifacts/build-info.txt
+          grep -q 'wifi_repeater_bands=2.4GHz-and-5GHz-single-channel' artifacts/build-info.txt
           grep -q 'wifi_hotspot_nat=repeater-only-ap0-to-wlan0-masquerade-with-private-chains' artifacts/build-info.txt
           grep -q 'wifi_persistence_db=/data/local/wifi/.version' artifacts/build-info.txt
           grep -q 'wifi_wlan_persistence=/data/local/wifi/wlan/networks' artifacts/build-info.txt
@@ -173,7 +174,13 @@ jobs:
             exit 1
           fi
           grep -Fq 'cmd_hotspot_repeater()' recovery-wifi/wifi
-          grep -Fq 'repeater:*) echo "mode: repeater (AP+STA+NAT)"' recovery-wifi/wifi
+          grep -Fq 'cmd_hotspot_repeater_2g()' recovery-wifi/wifi
+          grep -Fq 'cmd_hotspot_repeater_5g()' recovery-wifi/wifi
+          grep -Fq 'repeater-2g:*) echo "mode: repeater 2.4 GHz (AP+STA+NAT)"' recovery-wifi/wifi
+          grep -Fq 'repeater-5g:*) echo "mode: repeater 5 GHz (AP+STA+NAT)"' recovery-wifi/wifi
+          grep -Fq 'STA_CHANNEL=$(( (STA_FREQ - 5000) / 5 ))' recovery-wifi/wifi
+          grep -Fq "HOTSPOT_HW_MODE=a" recovery-wifi/wifi
+          grep -Fq "HOTSPOT_HW_MODE=g" recovery-wifi/wifi
           grep -Fq 'Internet sharing/NAT is disabled in start-vif mode.' recovery-wifi/wifi
           grep -Fq 'ALBUS_HOTSPOT_FWD' recovery-wifi/wifi
           grep -Fq 'ALBUS_HOTSPOT_NAT' recovery-wifi/wifi
