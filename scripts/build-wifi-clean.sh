@@ -116,10 +116,10 @@ sed -i \
   printf 'droidspaces_iptables=legacy-static-multicall-with-iptables-save-restore-aliases\n'
   printf 'wifi_system_mount=not-required\n'
   printf 'wifi_vendor_service=not-used\n'
-  printf 'wifi_hotspot=transient-ap0-vif-hardware-validation\n'
+  printf 'wifi_hotspot=ap0-vif-repeater-with-ipv4-nat\n'
   printf 'wifi_hotspot_address=192.168.43.1/24\n'
   printf 'wifi_hotspot_persistence=tmpfs-only\n'
-  printf 'wifi_hotspot_nat=not-enabled-yet\n'
+  printf 'wifi_hotspot_nat=ap0-to-wlan0-masquerade-with-private-chains\n'
   printf 'wifi_overlay_size=%s\n' "$(stat -c '%s' "$WIFI_OVERLAY_RAMDISK")"
 } >> "$ARTIFACT_DIR/build-info.txt"
 
