@@ -60,7 +60,20 @@ is_mounted() {
 }
 
 require_root() {
-    uid=$(id -u 2>/dev/null || echo 1)
+    # Do not execute Android/vendor utilities just to determine UID. Reading
+    # procfs keeps this safe even when stock partitions are unmounted or carry
+    # an incompatible dynamic linker/library set.
+    uid=1
+    if [ -r /proc/self/status ]; then
+        while read -r key real effective saved fsuid; do
+            case "$key" in
+                Uid:)
+                    uid=$real
+                    break
+                    ;;
+            esac
+        done < /proc/self/status
+    fi
     [ "$uid" = 0 ] || die "run from a root recovery shell"
 }
 
@@ -609,6 +622,7 @@ Recovery Wi-Fi (Motorola albus)
 
   wifi prepare
   wifi up
+  wifi start                         # alias for up
   wifi scan
   wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK
   wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE
@@ -618,8 +632,10 @@ Recovery Wi-Fi (Motorola albus)
   wifi ping HOST
   wifi disconnect
   wifi down
+  wifi stop                          # alias for down
   wifi logs
   wifi test
+  wifi help
 EOF
 }
 
@@ -629,7 +645,7 @@ shift 2>/dev/null || true
 
 case "$cmd" in
     prepare) prepare ;;
-    up) cmd_up ;;
+    up|start) cmd_up ;;
     scan) cmd_scan ;;
     connect) cmd_connect "$@" ;;
     connect-sae) cmd_connect_sae "$@" ;;
@@ -645,10 +661,10 @@ case "$cmd" in
         "$BB" ping -c 4 "$1"
         ;;
     disconnect) cmd_disconnect ;;
-    down) cmd_down ;;
+    down|stop) cmd_down ;;
     logs) cmd_logs ;;
     test) cmd_test ;;
-    help|-h|--help) usage ;;
+    help|h|-h|--help) usage ;;
     *)
         echo "Unknown command: $cmd"
         usage
