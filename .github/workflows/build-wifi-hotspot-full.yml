@@ -154,6 +154,8 @@ jobs:
           sh -n recovery-wifi/wifi
           sh -n recovery-wifi/wifi-udhcpc.script
           sh -n recovery-wifi/recovery-time-sync-albus
+          sh -n recovery-wifi/rctools
+          sh -n recovery-wifi/ds-recovery-check
           grep -Fq 'timeout 12 "$WPA"' recovery-wifi/wifi
           grep -Fq '[ -s "$STATE/lease.env" ]' recovery-wifi/wifi
           grep -Fq 'WPA_CLI_TIMEOUT=${WIFI_WPA_CLI_TIMEOUT:-2}' recovery-wifi/wifi
@@ -167,7 +169,9 @@ jobs:
           grep -Fq 'stage=association waiting up to 25s' recovery-wifi/wifi
           grep -Fq 'stage=dhcp acquiring lease' recovery-wifi/wifi
           grep -Fq 'Static resolver fallback:' recovery-wifi/wifi
-          grep -Fq 'TIME_SYNC=/sbin/recovery-time-sync-albus' recovery-wifi/wifi
+          grep -Fq 'TIME_SYNC=/sbin/recovery-time-sync' recovery-wifi/wifi
+          grep -Fq 'RCTOOLS=/sbin/rctools' recovery-wifi/wifi
+          grep -Fq '"$RCTOOLS" mount data rw' recovery-wifi/wifi
           grep -Fq 'if [ "$#" -eq 0 ]; then' recovery-wifi/wifi
           if grep -Fq '"$WPACLI" -p' recovery-wifi/wifi; then
             echo "Direct unbounded wpa_cli invocation remains"
@@ -177,10 +181,22 @@ jobs:
             echo "Direct unbounded iptables invocation remains"
             exit 1
           fi
-          if grep -Fq 'twrp mount data' recovery-wifi/wifi; then
-            echo "Unbounded twrp mount data invocation remains"
+          if grep -Fqi 'twrp mount' recovery-wifi/wifi; then
+            echo "TWRP mount dependency remains in Wi-Fi runtime"
             exit 1
           fi
+          if grep -Eq '^[[:space:]]*service[[:space:]]+recovery([[:space:]]|$)' recovery-wifi/init.recovery.service.rc; then
+            echo "TWRP recovery service must not exist in CLI-minimal overlay"
+            exit 1
+          fi
+          grep -Fq 'The stock TWRP GUI/recovery service is intentionally not defined here.' recovery-wifi/init.recovery.service.rc
+          grep -Fq 'RCTools - Motorola Albus CLI recovery' recovery-wifi/rctools
+          grep -Fq 'rctools mount active system|vendor|oem|all [rw|ro]' recovery-wifi/rctools
+          grep -Fq 'rctools mount data [rw|ro]' recovery-wifi/rctools
+          grep -Fq 'rctools mount common [rw|ro]' recovery-wifi/rctools
+          grep -Fq 'rctools droidspaces check' recovery-wifi/rctools
+          grep -Fq 'TIMESYNC=/sbin/recovery-time-sync' recovery-wifi/rctools
+          grep -Fq 'DSCHECK=/sbin/ds-recovery-check' recovery-wifi/rctools
           grep -q 'wifi_hotspot=ap-only-wlan0-plus-separate-ap0-vif-concurrency-and-repeater-modes' artifacts/build-info.txt
           grep -q 'wifi_repeater_bands=2.4GHz-and-5GHz-single-channel' artifacts/build-info.txt
           grep -q 'wifi_hotspot_nat=repeater-only-ap0-to-wlan0-masquerade-with-private-chains' artifacts/build-info.txt
@@ -191,6 +207,9 @@ jobs:
           grep -q 'wifi_control_watchdogs=wpa-cli-2s-iptables-5s-data-8s-mount-5s-sync-5s' artifacts/build-info.txt
           grep -q 'wifi_dns_fallback=busybox-nslookup-ipv4' artifacts/build-info.txt
           grep -q 'wifi_time_sync=one-shot-ntp-last-good-under-data-local-wifi' artifacts/build-info.txt
+          grep -q 'recovery_frontend=rctools-channel-compatible' artifacts/build-info.txt
+          grep -q 'recovery_mounts=rctools-direct-auto-ext4-f2fs-vfat-rw-default' artifacts/build-info.txt
+          grep -q 'twrp_recovery_service=disabled-in-cli-minimal-overlay' artifacts/build-info.txt
 
           grep -Fq 'WIFI_WLAN_NETWORKS=$WIFI_WLAN_DIR/networks' recovery-wifi/wifi
           grep -Fq 'WIFI_AP_CONF=$WIFI_AP_DIR/hotspot.conf' recovery-wifi/wifi
@@ -221,6 +240,10 @@ jobs:
           grep -Fq 'ALBUS_HOTSPOT_NAT' recovery-wifi/wifi
           grep -Fq 'MASQUERADE' recovery-wifi/wifi
           grep -Fq '/proc/sys/net/ipv4/ip_forward' recovery-wifi/wifi
+          test -s artifacts/rctools
+          test -s artifacts/ds-recovery-check
+          test -s artifacts/init.recovery.service.rc
+          test -s artifacts/recovery-time-sync-albus
 
           for bin in hostapd.albus iw.albus; do
             test -x "recovery-wifi/out/$bin"
