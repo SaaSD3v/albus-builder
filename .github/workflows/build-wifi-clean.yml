@@ -36,6 +36,7 @@ jobs:
             file \
             flex \
             gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
             git \
             libelf-dev \
             libssl-dev \
@@ -49,6 +50,14 @@ jobs:
 
       - name: Build verified bare recovery + complete Albus Wi-Fi client
         run: bash scripts/build-wifi-clean.sh
+
+      - name: Validate static legacy iptables payload
+        run: |
+          test -x recovery-wifi/out/iptables.albus
+          file recovery-wifi/out/iptables.albus | tee iptables-file.txt
+          grep -q 'ARM aarch64' iptables-file.txt
+          grep -q 'statically linked' iptables-file.txt
+          grep -q 'droidspaces_iptables=legacy-static-multicall-with-iptables-save-restore-aliases' artifacts/build-info.txt
 
       - name: Upload to GoFile
         run: |
