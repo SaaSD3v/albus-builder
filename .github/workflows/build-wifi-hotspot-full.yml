@@ -181,7 +181,7 @@ jobs:
             echo "Unbounded twrp mount data invocation remains"
             exit 1
           fi
-          grep -q 'wifi_hotspot=separate-ap0-vif-concurrency-and-repeater-modes' artifacts/build-info.txt
+          grep -q 'wifi_hotspot=ap-only-wlan0-plus-separate-ap0-vif-concurrency-and-repeater-modes' artifacts/build-info.txt
           grep -q 'wifi_repeater_bands=2.4GHz-and-5GHz-single-channel' artifacts/build-info.txt
           grep -q 'wifi_hotspot_nat=repeater-only-ap0-to-wlan0-masquerade-with-private-chains' artifacts/build-info.txt
           grep -q 'wifi_persistence_db=/data/local/wifi/.version' artifacts/build-info.txt
@@ -200,6 +200,9 @@ jobs:
           grep -Fq 'cmd_forget()' recovery-wifi/wifi
           grep -Fq 'cmd_hotspot_create()' recovery-wifi/wifi
           grep -Fq 'cmd_hotspot_config()' recovery-wifi/wifi
+          grep -Fq 'cmd_hotspot_start()' recovery-wifi/wifi
+          grep -Fq 'start) cmd_hotspot_start "$@" ;;' recovery-wifi/wifi
+          grep -Fq 'active) echo "mode: AP-only on wlan0"' recovery-wifi/wifi
           grep -qx 'IPTABLES=/sbin/iptables' recovery-wifi/wifi
           if grep -qx 'IPTABLES=/sbin/iptables.albus' recovery-wifi/wifi; then
             echo "Runtime must invoke xtables-multi through the /sbin/iptables alias"
