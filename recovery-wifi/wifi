@@ -20,6 +20,7 @@ IW=/sbin/iw.albus
 IPTABLES=/sbin/iptables
 WCNSS=/sbin/wcnss-recovery-albus
 UDHCPC_SCRIPT=/sbin/wifi-udhcpc.script
+TIME_SYNC=/sbin/recovery-time-sync-albus
 
 STATE=/tmp/albus-wifi
 MNT=$STATE/mnt
@@ -38,6 +39,8 @@ WIFI_WLAN_DIR=$WIFI_DB_ROOT/wlan
 WIFI_WLAN_NETWORKS=$WIFI_WLAN_DIR/networks
 WIFI_AP_DIR=$WIFI_DB_ROOT/ap0
 WIFI_AP_CONF=$WIFI_AP_DIR/hotspot.conf
+LEGACY_WLAN_NETWORKS=$WIFI_DB_ROOT/networks
+LEGACY_AP_CONF=$WIFI_DB_ROOT/hotspot.conf
 PERSIST_COUNT=0
 WCNSS_LOG=$STATE/wcnss-helper.log
 PREPLOG=$STATE/prepare.log
@@ -59,6 +62,11 @@ HOTSPOT_NAT_CHAIN=ALBUS_HOTSPOT_NAT
 HOTSPOT_ADDR=192.168.43.1
 HOTSPOT_CIDR=192.168.43.1/24
 HOTSPOT_SUBNET=192.168.43.0/24
+WPA_CLI_TIMEOUT=${WIFI_WPA_CLI_TIMEOUT:-2}
+CONTROL_TIMEOUT=${WIFI_CONTROL_TIMEOUT:-5}
+DATA_MOUNT_TIMEOUT=${WIFI_DATA_MOUNT_TIMEOUT:-8}
+MOUNT_TIMEOUT=${WIFI_MOUNT_TIMEOUT:-5}
+SYNC_TIMEOUT=${WIFI_SYNC_TIMEOUT:-5}
 IFACE=${WIFI_IFACE:-wlan0}
 HOTSPOT_IFACE=${WIFI_HOTSPOT_IFACE:-ap0}
 
@@ -84,6 +92,36 @@ log() {
     echo "[wifi] $*" | tee -a "$PREPLOG"
 }
 
+wpacli() {
+    "$BB" timeout "$WPA_CLI_TIMEOUT" "$WPACLI" "$@"
+}
+
+ipt() {
+    "$BB" timeout "$CONTROL_TIMEOUT" "$IPTABLES" "$@"
+}
+
+sync_store() {
+    "$BB" timeout "$SYNC_TIMEOUT" "$BB" sync >/dev/null 2>&1 || {
+        log "persistent storage sync exceeded ${SYNC_TIMEOUT}s; continuing"
+        return 0
+    }
+}
+
+stop_child_bounded() {
+    child_pid=$1
+    case "$child_pid" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    kill "$child_pid" 2>/dev/null || true
+    i=0
+    while kill -0 "$child_pid" 2>/dev/null && [ "$i" -lt 2 ]; do
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+    kill -0 "$child_pid" 2>/dev/null && kill -9 "$child_pid" 2>/dev/null || true
+    wait "$child_pid" 2>/dev/null || true
+}
+
 is_mounted() {
     grep -q " $1 " /proc/mounts 2>/dev/null
 }
@@ -94,12 +132,17 @@ data_partition_mounted() {
 
 ensure_persistent_store() {
     if ! data_partition_mounted; then
-        if command -v twrp >/dev/null 2>&1; then
-            twrp mount data >/dev/null 2>&1 || true
+        twrp_bin=$(command -v twrp 2>/dev/null || true)
+        if [ -n "$twrp_bin" ]; then
+            log "persistence: /data is not mounted; trying TWRP mount for at most ${DATA_MOUNT_TIMEOUT}s"
+            "$BB" timeout "$DATA_MOUNT_TIMEOUT" "$twrp_bin" mount data >/dev/null 2>&1 || true
         fi
     fi
 
-    data_partition_mounted || return 1
+    data_partition_mounted || {
+        log "persistence: /data unavailable; continuing with tmpfs runtime only"
+        return 1
+    }
 
     "$BB" mkdir -p "$WIFI_WLAN_NETWORKS" "$WIFI_AP_DIR" 2>/dev/null || return 1
     "$BB" chmod 700 "$WIFI_DB_ROOT" "$WIFI_WLAN_DIR" "$WIFI_WLAN_NETWORKS" "$WIFI_AP_DIR" 2>/dev/null || return 1
@@ -119,8 +162,28 @@ ensure_persistent_store() {
         "$BB" mv -f "$version_tmp" "$WIFI_DB_VERSION" || { "$BB" rm -f "$version_tmp"; return 1; }
     fi
 
+    migrate_legacy_persistent_store
     recover_pending_wlan_profiles
     return 0
+}
+
+migrate_legacy_persistent_store() {
+    migrated=0
+    if [ -d "$LEGACY_WLAN_NETWORKS" ] && [ "$LEGACY_WLAN_NETWORKS" != "$WIFI_WLAN_NETWORKS" ]; then
+        for legacy in "$LEGACY_WLAN_NETWORKS"/*.conf; do
+            [ -f "$legacy" ] || continue
+            name=${legacy##*/}
+            target="$WIFI_WLAN_NETWORKS/$name"
+            [ -f "$target" ] || { "$BB" mv "$legacy" "$target" 2>/dev/null && migrated=1 || true; }
+        done
+    fi
+    if [ -f "$LEGACY_AP_CONF" ] && [ "$LEGACY_AP_CONF" != "$WIFI_AP_CONF" ] && [ ! -f "$WIFI_AP_CONF" ]; then
+        "$BB" mv "$LEGACY_AP_CONF" "$WIFI_AP_CONF" 2>/dev/null && migrated=1 || true
+    fi
+    if [ "$migrated" -eq 1 ]; then
+        sync_store
+        log "migrated legacy Wi-Fi profiles into wlan/ and ap0/"
+    fi
 }
 
 network_id() {
@@ -197,7 +260,7 @@ persist_network() {
     "$BB" chmod 600 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
     "$BB" chown 0:0 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
     "$BB" mv -f "$tmp" "$target" || { "$BB" rm -f "$tmp"; return 1; }
-    "$BB" sync
+    sync_store
     return 0
 }
 
@@ -315,8 +378,8 @@ mount_ro() {
     is_mounted "$point" && return 0
     [ -e "$block" ] || return 1
 
-    mount -t ext4 -o ro,nosuid,nodev "$block" "$point" 2>/dev/null ||
-        mount -o ro "$block" "$point" 2>/dev/null
+    "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -t ext4 -o ro,nosuid,nodev "$block" "$point" 2>/dev/null ||
+        "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -o ro "$block" "$point" 2>/dev/null
 }
 
 get_vendor_root() {
@@ -484,6 +547,7 @@ trigger_wcnss() {
     if [ ! -s "$READY" ]; then
         log "WCNSS helper did not complete subsystem trigger"
         cat "$WCNSS_LOG" 2>/dev/null || true
+        kill -0 "$pid" 2>/dev/null && stop_child_bounded "$pid" || true
         return 1
     fi
 
@@ -570,14 +634,23 @@ prepare() {
 }
 
 stop_supplicant() {
-    if [ -f "$STATE/wpa.pid" ]; then
-        pid=$(cat "$STATE/wpa.pid" 2>/dev/null || true)
-        [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-        rm -f "$STATE/wpa.pid"
+    pid=""
+    [ -f "$STATE/wpa.pid" ] && pid=$(cat "$STATE/wpa.pid" 2>/dev/null || true)
+    if [ -S "$CTRL/$IFACE" ]; then
+        wpacli -p "$CTRL" -i "$IFACE" terminate >/dev/null 2>&1 || true
     fi
-
-    "$BB" pkill -f '/sbin/wpa_supplicant.albus' 2>/dev/null || true
-    sleep 1
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *)
+            if kill -0 "$pid" 2>/dev/null; then
+                exe=$("$BB" readlink "/proc/$pid/exe" 2>/dev/null || true)
+                case "$exe" in
+                    */wpa_supplicant.albus) stop_child_bounded "$pid" ;;
+                esac
+            fi
+            ;;
+    esac
+    "$BB" rm -f "$STATE/wpa.pid" 2>/dev/null || true
 }
 
 start_supplicant() {
@@ -635,7 +708,7 @@ wait_connected() {
     limit=${1:-30}
     i=0
     while [ "$i" -lt "$limit" ]; do
-        state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+        state=$(wpacli -p "$CTRL" -i "$IFACE" status 2>/dev/null |
             "$BB" sed -n 's/^wpa_state=//p')
         [ "$state" = COMPLETED ] && return 0
         sleep 1
@@ -657,10 +730,14 @@ do_dhcp() {
     while [ "$i" -lt 30 ]; do
         if [ -s "$STATE/lease.env" ]; then
             if kill -0 "$dhcp_pid" 2>/dev/null; then
-                kill "$dhcp_pid" 2>/dev/null || true
+                stop_child_bounded "$dhcp_pid"
+            else
+                wait "$dhcp_pid" 2>/dev/null || true
             fi
-            wait "$dhcp_pid" 2>/dev/null || true
             "$BB" rm -f "$STATE/udhcpc.pid" 2>/dev/null || true
+            if [ -x "$TIME_SYNC" ]; then
+                "$BB" timeout 15 "$TIME_SYNC" online || echo "Warning: network is up, but UTC sync failed/timed out." >&2
+            fi
             return 0
         fi
 
@@ -674,7 +751,8 @@ do_dhcp() {
     done
 
     if kill -0 "$dhcp_pid" 2>/dev/null; then
-        kill "$dhcp_pid" 2>/dev/null || true
+        stop_child_bounded "$dhcp_pid"
+    else
         wait "$dhcp_pid" 2>/dev/null || true
     fi
     "$BB" rm -f "$STATE/udhcpc.pid" 2>/dev/null || true
@@ -737,7 +815,7 @@ hotspot_channel_band() {
 
 load_sta_radio_info() {
     [ -S "$CTRL/$IFACE" ] || return 1
-    sta_status=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null)
+    sta_status=$(wpacli -p "$CTRL" -i "$IFACE" status 2>/dev/null)
     state=$(printf '%s\n' "$sta_status" | "$BB" sed -n 's/^wpa_state=//p')
     [ "$state" = COMPLETED ] || return 1
 
@@ -823,7 +901,7 @@ persist_hotspot_conf() {
     "$BB" chmod 600 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
     "$BB" chown 0:0 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
     "$BB" mv -f "$tmp" "$WIFI_AP_CONF" || { "$BB" rm -f "$tmp"; return 1; }
-    "$BB" sync
+    sync_store
 }
 
 hotspot_saved_value() {
@@ -997,7 +1075,7 @@ cmd_hotspot_delete() {
 
     deleted_ssid=$(hotspot_saved_value ssid 2>/dev/null || true)
     "$BB" rm -f "$WIFI_AP_CONF" || return 1
-    "$BB" sync
+    sync_store
     echo "Deleted saved ap0 hotspot: ${deleted_ssid:-<unknown>}"
     [ -f "$HOTSPOT_MARKER" ] && echo "The running hotspot was not stopped."
 }
@@ -1047,13 +1125,13 @@ stop_hostapd() {
 
 clear_hotspot_nat() {
     if [ -x "$IPTABLES" ]; then
-        "$IPTABLES" -D FORWARD -j "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
-        "$IPTABLES" -F "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
-        "$IPTABLES" -X "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
+        ipt -D FORWARD -j "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
+        ipt -F "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
+        ipt -X "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
 
-        "$IPTABLES" -t nat -D POSTROUTING -j "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
-        "$IPTABLES" -t nat -F "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
-        "$IPTABLES" -t nat -X "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
+        ipt -t nat -D POSTROUTING -j "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
+        ipt -t nat -F "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
+        ipt -t nat -X "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
     fi
 
     if [ -f "$HOTSPOT_IP_FORWARD_SAVED" ] &&
@@ -1088,39 +1166,39 @@ enable_hotspot_nat() {
 
     # Remove only our own stale chains/jumps. Never flush DroidSpaces or any
     # pre-existing recovery firewall state.
-    "$IPTABLES" -D FORWARD -j "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
-    "$IPTABLES" -F "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
-    "$IPTABLES" -X "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
-    "$IPTABLES" -t nat -D POSTROUTING -j "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
-    "$IPTABLES" -t nat -F "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
-    "$IPTABLES" -t nat -X "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
+    ipt -D FORWARD -j "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
+    ipt -F "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
+    ipt -X "$HOTSPOT_FORWARD_CHAIN" >/dev/null 2>&1 || true
+    ipt -t nat -D POSTROUTING -j "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
+    ipt -t nat -F "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
+    ipt -t nat -X "$HOTSPOT_NAT_CHAIN" >/dev/null 2>&1 || true
 
-    "$IPTABLES" -N "$HOTSPOT_FORWARD_CHAIN" || {
+    ipt -N "$HOTSPOT_FORWARD_CHAIN" || {
         clear_hotspot_nat
         return 1
     }
-    "$IPTABLES" -A "$HOTSPOT_FORWARD_CHAIN"         -i "$HOTSPOT_IFACE" -o "$IFACE" -s "$HOTSPOT_SUBNET" -j ACCEPT || {
+    ipt -A "$HOTSPOT_FORWARD_CHAIN"         -i "$HOTSPOT_IFACE" -o "$IFACE" -s "$HOTSPOT_SUBNET" -j ACCEPT || {
         clear_hotspot_nat
         return 1
     }
-    "$IPTABLES" -A "$HOTSPOT_FORWARD_CHAIN"         -i "$IFACE" -o "$HOTSPOT_IFACE" -d "$HOTSPOT_SUBNET"         -m state --state ESTABLISHED,RELATED -j ACCEPT || {
+    ipt -A "$HOTSPOT_FORWARD_CHAIN"         -i "$IFACE" -o "$HOTSPOT_IFACE" -d "$HOTSPOT_SUBNET"         -m state --state ESTABLISHED,RELATED -j ACCEPT || {
         clear_hotspot_nat
         return 1
     }
-    "$IPTABLES" -I FORWARD 1 -j "$HOTSPOT_FORWARD_CHAIN" || {
+    ipt -I FORWARD 1 -j "$HOTSPOT_FORWARD_CHAIN" || {
         clear_hotspot_nat
         return 1
     }
 
-    "$IPTABLES" -t nat -N "$HOTSPOT_NAT_CHAIN" || {
+    ipt -t nat -N "$HOTSPOT_NAT_CHAIN" || {
         clear_hotspot_nat
         return 1
     }
-    "$IPTABLES" -t nat -A "$HOTSPOT_NAT_CHAIN"         -s "$HOTSPOT_SUBNET" -o "$IFACE" -j MASQUERADE || {
+    ipt -t nat -A "$HOTSPOT_NAT_CHAIN"         -s "$HOTSPOT_SUBNET" -o "$IFACE" -j MASQUERADE || {
         clear_hotspot_nat
         return 1
     }
-    "$IPTABLES" -t nat -I POSTROUTING 1 -j "$HOTSPOT_NAT_CHAIN" || {
+    ipt -t nat -I POSTROUTING 1 -j "$HOTSPOT_NAT_CHAIN" || {
         clear_hotspot_nat
         return 1
     }
@@ -1173,7 +1251,9 @@ hotspot_active_iface() {
 
 clear_hotspot_state() {
     active_iface=$(hotspot_active_iface)
-    clear_hotspot_nat
+    if [ -f "$HOTSPOT_NAT_MARKER" ] || [ -f "$HOTSPOT_IP_FORWARD_SAVED" ]; then
+        clear_hotspot_nat
+    fi
     stop_udhcpd
     stop_hostapd
     "$BB" ip addr flush dev "$active_iface" 2>/dev/null || true
@@ -1219,7 +1299,13 @@ start_udhcpd() {
     : > "$HOTSPOT_LEASES"
     : > "$HOTSPOT_DHCP_LOG"
 
-    hotspot_dns=$("$BB" awk '/^nameserver[[:space:]]+/ { print $2; exit }' /etc/resolv.conf 2>/dev/null || true)
+    hotspot_dns=$("$BB" awk '
+        $1 == "nameserver" &&
+        $2 ~ /^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$/ {
+            print $2
+            exit
+        }
+    ' /etc/resolv.conf 2>/dev/null || true)
     [ -n "$hotspot_dns" ] || hotspot_dns=8.8.8.8
 
     {
@@ -1262,7 +1348,7 @@ cmd_hotspot_probe_vif() {
 
     sta_before=""
     if [ -S "$CTRL/$IFACE" ]; then
-        sta_before=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+        sta_before=$(wpacli -p "$CTRL" -i "$IFACE" status 2>/dev/null |
             "$BB" sed -n 's/^wpa_state=//p')
     fi
 
@@ -1280,7 +1366,7 @@ cmd_hotspot_probe_vif() {
 
     sta_after=""
     if [ -S "$CTRL/$IFACE" ]; then
-        sta_after=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+        sta_after=$(wpacli -p "$CTRL" -i "$IFACE" status 2>/dev/null |
             "$BB" sed -n 's/^wpa_state=//p')
     fi
 
@@ -1312,7 +1398,7 @@ cmd_hotspot_start_vif() {
     channel=$requested_channel
     sta_state=""
     if [ -S "$CTRL/$IFACE" ]; then
-        sta_state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+        sta_state=$(wpacli -p "$CTRL" -i "$IFACE" status 2>/dev/null |
             "$BB" sed -n 's/^wpa_state=//p')
     fi
 
@@ -1419,7 +1505,7 @@ cmd_hotspot_repeater_band() {
 
     sta_state=""
     if [ -S "$CTRL/$IFACE" ]; then
-        sta_state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+        sta_state=$(wpacli -p "$CTRL" -i "$IFACE" status 2>/dev/null |
             "$BB" sed -n 's/^wpa_state=//p')
     fi
 
@@ -1659,18 +1745,25 @@ cmd_up() {
         return 1
     }
 
+    echo "[wifi] stage=persistence checking saved wlan profiles"
     if build_runtime_from_persistent; then
-        echo "Loaded $PERSIST_COUNT saved wlan network(s) from $WIFI_WLAN_DIR"
+        echo "[wifi] persistence: loaded $PERSIST_COUNT saved network(s) from $WIFI_WLAN_NETWORKS"
+    else
+        echo "[wifi] persistence: no saved profiles loaded; continuing with runtime config"
     fi
+    [ -x "$TIME_SYNC" ] && "$BB" timeout 5 "$TIME_SYNC" restore >/dev/null 2>&1 || true
 
+    echo "[wifi] stage=supplicant starting"
     start_supplicant "$CONF" || {
-        echo "wpa_supplicant did not start. Run: wifi logs"
+        echo "[wifi] supplicant failed. Run: wifi logs"
         return 1
     }
-    echo "Wi-Fi ready on $IFACE"
+    echo "[wifi] stage=supplicant ready on $IFACE"
 
     if "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$CONF" 2>/dev/null; then
+        echo "[wifi] stage=association waiting up to 25s"
         if wait_connected 25; then
+            echo "[wifi] stage=dhcp acquiring lease"
             if do_dhcp; then
                 echo "Wi-Fi connection and DHCP restored on $IFACE"
             else
@@ -1680,6 +1773,8 @@ cmd_up() {
         else
             echo "Wi-Fi ready; no saved network associated within the timeout"
         fi
+    else
+        echo "[wifi] no network blocks in runtime config; use wifi connect/scan"
     fi
 }
 
@@ -1689,9 +1784,9 @@ cmd_scan() {
         return 1
     }
     [ -S "$CTRL/$IFACE" ] || cmd_up || return 1
-    "$WPACLI" -p "$CTRL" -i "$IFACE" scan >/dev/null 2>&1 || true
+    wpacli -p "$CTRL" -i "$IFACE" scan >/dev/null 2>&1 || true
     sleep 3
-    "$WPACLI" -p "$CTRL" -i "$IFACE" scan_results
+    wpacli -p "$CTRL" -i "$IFACE" scan_results
 }
 
 cmd_connect() {
@@ -1822,9 +1917,9 @@ cmd_forget() {
         return 1
     }
 
-    current=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^ssid=//p')
+    current=$(wpacli -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^ssid=//p')
     "$BB" rm -f "$saved" || return 1
-    "$BB" sync
+    sync_store
 
     if [ "$current" = "$ssid" ]; then
         cmd_disconnect
@@ -1843,7 +1938,7 @@ cmd_forget_all() {
     }
 
     "$BB" rm -f "$WIFI_WLAN_NETWORKS"/*.conf 2>/dev/null || true
-    "$BB" sync
+    sync_store
     cmd_disconnect
     write_base_conf "$CONF"
     echo "Forgot all saved wlan networks."
@@ -1858,7 +1953,7 @@ cmd_status() {
         echo "wcnss trigger: complete" || echo "wcnss trigger: not complete"
 
     echo "--- supplicant ---"
-    "$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null || true
+    wpacli -p "$CTRL" -i "$IFACE" status 2>/dev/null || true
 
     echo "--- address ---"
     "$BB" ip addr show dev "$IFACE" 2>/dev/null || true
@@ -1870,16 +1965,47 @@ cmd_status() {
     cat /etc/resolv.conf 2>/dev/null || true
 }
 
+deconfigure_network() {
+    interface="$IFACE" "$UDHCPC_SCRIPT" deconfig >/dev/null 2>&1 || {
+        "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+        : > /etc/resolv.conf 2>/dev/null || true
+        "$BB" rm -f "$STATE/lease.env" "$STATE/udhcpc.pid" 2>/dev/null || true
+    }
+}
+
+cmd_ping() {
+    [ "$#" -ge 1 ] || { echo 'usage: wifi ping HOST'; return 2; }
+    host=$1
+    "$BB" ping -c 4 "$host" && return 0
+    dns=$("$BB" awk '
+        $1 == "nameserver" &&
+        $2 ~ /^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$/ { print $2; exit }
+    ' /etc/resolv.conf 2>/dev/null || true)
+    [ -n "$dns" ] || return 1
+    resolved=$("$BB" nslookup "$host" "$dns" 2>/dev/null |
+        "$BB" awk '
+            /^Name:[[:space:]]*/ { answer=1; next }
+            answer && /^Address:[[:space:]]*/ {
+                ip=$2
+                sub(/:[0-9]+$/, "", ip)
+                if (ip ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) { print ip; exit }
+            }
+        ')
+    [ -n "$resolved" ] || return 1
+    echo "Static resolver fallback: $host -> $resolved via $dns"
+    "$BB" ping -c 4 "$resolved"
+}
+
 cmd_disconnect() {
-    "$WPACLI" -p "$CTRL" -i "$IFACE" disconnect 2>/dev/null || true
-    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+    wpacli -p "$CTRL" -i "$IFACE" disconnect 2>/dev/null || true
+    deconfigure_network
     echo "Wi-Fi disconnected"
 }
 
 cmd_down() {
     clear_hotspot_state
     stop_supplicant
-    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+    deconfigure_network
     "$BB" ip link set "$IFACE" down 2>/dev/null || true
     echo "Wi-Fi stopped"
 }
@@ -1980,8 +2106,12 @@ EOF
 }
 
 mkdir_state
-cmd=${1:-help}
-shift 2>/dev/null || true
+if [ "$#" -eq 0 ]; then
+    usage
+    exit 0
+fi
+cmd=$1
+shift
 
 case "$cmd" in
     prepare) prepare ;;
@@ -2017,14 +2147,7 @@ case "$cmd" in
         ;;
     dhcp) do_dhcp ;;
     status) cmd_status ;;
-    ping)
-        [ "$#" -ge 1 ] || {
-            echo 'usage: wifi ping HOST'
-            exit 2
-        }
-        require_payload
-        "$BB" ping -c 4 "$1"
-        ;;
+    ping) cmd_ping "$@" ;;
     disconnect) cmd_disconnect ;;
     down|stop) cmd_down ;;
     logs) cmd_logs ;;
