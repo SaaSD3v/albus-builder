@@ -15,6 +15,8 @@ export LC_ALL
 BB=/sbin/busybox.albus
 WPA=/sbin/wpa_supplicant.albus
 WPACLI=/sbin/wpa_cli.albus
+HOSTAPD=/sbin/hostapd.albus
+IW=/sbin/iw.albus
 WCNSS=/sbin/wcnss-recovery-albus
 UDHCPC_SCRIPT=/sbin/wifi-udhcpc.script
 
@@ -31,7 +33,19 @@ WCNSS_LOG=$STATE/wcnss-helper.log
 PREPLOG=$STATE/prepare.log
 READY=$STATE/wcnss.opened
 CAL_FILE=$STATE/WCNSS_qcom_wlan_cal.bin
+HOTSPOT_CONF=$STATE/hotspot.conf
+HOTSPOT_MARKER=$STATE/hotspot.active
+HOTSPOT_LOG=$STATE/hostapd.log
+HOTSPOT_HOSTAPD_PID=$STATE/hostapd.pid
+HOTSPOT_CTRL=$STATE/hostapd-ctrl
+HOTSPOT_DHCP=$STATE/udhcpd.conf
+HOTSPOT_LEASES=$STATE/udhcpd.leases
+HOTSPOT_PID=$STATE/udhcpd.pid
+HOTSPOT_DHCP_LOG=$STATE/udhcpd.log
+HOTSPOT_ADDR=192.168.43.1
+HOTSPOT_CIDR=192.168.43.1/24
 IFACE=${WIFI_IFACE:-wlan0}
+HOTSPOT_IFACE=${WIFI_HOTSPOT_IFACE:-ap0}
 
 VENDOR_BLOCK=/dev/block/bootdevice/by-name/oem
 MODEM_BLOCK=/dev/block/bootdevice/by-name/modem
@@ -78,8 +92,15 @@ require_root() {
 }
 
 require_payload() {
-    for f in "$BB" "$WPA" "$WPACLI" "$WCNSS" "$UDHCPC_SCRIPT"; do
+    for f in "$BB" "$WPA" "$WPACLI" "$HOSTAPD" "$IW" "$WCNSS" "$UDHCPC_SCRIPT"; do
         [ -x "$f" ] || die "missing recovery Wi-Fi payload: $f"
+    done
+}
+
+require_hotspot_payload() {
+    require_payload
+    for f in "$HOSTAPD" "$IW"; do
+        [ -x "$f" ] || die "missing recovery hotspot payload: $f"
     done
 }
 
@@ -358,6 +379,7 @@ stop_supplicant() {
 
 start_supplicant() {
     require_payload
+    [ ! -f "$HOTSPOT_MARKER" ] || clear_hotspot_state
 
     [ -f "$CONF" ] || {
         cat > "$CONF" <<'EOF'
@@ -404,6 +426,422 @@ wait_connected() {
 do_dhcp() {
     require_payload
     "$BB" udhcpc -i "$IFACE" -s "$UDHCPC_SCRIPT"         -p "$STATE/udhcpc.pid" -t 8 -T 3 -A 1 -q
+}
+
+delete_hotspot_vif() {
+    [ "$HOTSPOT_IFACE" = "$IFACE" ] && return 0
+    [ -d "/sys/class/net/$HOTSPOT_IFACE" ] || return 0
+
+    "$IW" dev "$HOTSPOT_IFACE" del >>"$PREPLOG" 2>&1 || return 1
+
+    i=0
+    while [ "$i" -lt 10 ] && [ -d "/sys/class/net/$HOTSPOT_IFACE" ]; do
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+    [ ! -d "/sys/class/net/$HOTSPOT_IFACE" ]
+}
+
+create_hotspot_vif() {
+    delete_hotspot_vif >/dev/null 2>&1 || return 1
+
+    echo "Creating AP VIF $HOTSPOT_IFACE on $IFACE..."
+    if ! "$IW" dev "$IFACE" interface add "$HOTSPOT_IFACE" type __ap >>"$PREPLOG" 2>&1; then
+        return 1
+    fi
+
+    i=0
+    while [ "$i" -lt 5 ] && [ ! -d "/sys/class/net/$HOTSPOT_IFACE" ]; do
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+
+    [ -d "/sys/class/net/$HOTSPOT_IFACE" ] || {
+        delete_hotspot_vif >/dev/null 2>&1 || true
+        return 1
+    }
+}
+
+current_sta_channel() {
+    [ -S "$CTRL/$IFACE" ] || return 1
+    state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+        "$BB" sed -n 's/^wpa_state=//p')
+    [ "$state" = COMPLETED ] || return 1
+
+    freq=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+        "$BB" sed -n 's/^freq=//p')
+    case "$freq" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+
+    if [ "$freq" -ge 2412 ] && [ "$freq" -le 2462 ]; then
+        channel=$(( (freq - 2407) / 5 ))
+        [ "$channel" -ge 1 ] && [ "$channel" -le 11 ] || return 1
+        printf '%s\n' "$channel"
+        return 0
+    fi
+    return 1
+}
+
+make_hotspot_conf() {
+    ssid=$1
+    pass=$2
+    channel=$3
+
+    [ -n "$ssid" ] && [ "${#ssid}" -le 32 ] || {
+        echo "Hotspot SSID must contain 1-32 characters." >&2
+        return 1
+    }
+    [ "${#pass}" -ge 8 ] && [ "${#pass}" -le 63 ] || {
+        echo "Hotspot password must contain 8-63 characters." >&2
+        return 1
+    }
+    case "$channel" in
+        1|2|3|4|5|6|7|8|9|10|11) ;;
+        *)
+            echo "Hotspot channel must be between 1 and 11." >&2
+            return 1
+            ;;
+    esac
+    if printf '%s' "$ssid" | "$BB" grep -q '[[:cntrl:]]' ||
+       printf '%s' "$pass" | "$BB" grep -q '[[:cntrl:]]'; then
+        echo "Hotspot SSID/password cannot contain control characters." >&2
+        return 1
+    fi
+
+    {
+        printf 'interface=%s\n' "$HOTSPOT_IFACE"
+        printf '%s\n' 'driver=nl80211'
+        printf 'ctrl_interface=%s\n' "$HOTSPOT_CTRL"
+        printf 'ssid=%s\n' "$ssid"
+        printf '%s\n' 'hw_mode=g'
+        printf 'channel=%s\n' "$channel"
+        printf '%s\n' 'auth_algs=1'
+        printf '%s\n' 'wpa=2'
+        printf '%s\n' 'wpa_key_mgmt=WPA-PSK'
+        printf '%s\n' 'rsn_pairwise=CCMP'
+        printf 'wpa_passphrase=%s\n' "$pass"
+    } > "$HOTSPOT_CONF" || return 1
+
+    "$BB" chmod 600 "$HOTSPOT_CONF" 2>/dev/null || true
+}
+
+stop_udhcpd() {
+    pid=""
+    [ -f "$HOTSPOT_PID" ] && pid=$(cat "$HOTSPOT_PID" 2>/dev/null || true)
+
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *)
+            if kill -0 "$pid" 2>/dev/null; then
+                exe=$("$BB" readlink "/proc/$pid/exe" 2>/dev/null || true)
+                case "$exe" in
+                    */busybox.albus)
+                        kill "$pid" 2>/dev/null || true
+                        "$BB" sleep 1
+                        ;;
+                esac
+            fi
+            ;;
+    esac
+    "$BB" rm -f "$HOTSPOT_PID" 2>/dev/null || true
+}
+
+stop_hostapd() {
+    pid=""
+    [ -f "$HOTSPOT_HOSTAPD_PID" ] && pid=$(cat "$HOTSPOT_HOSTAPD_PID" 2>/dev/null || true)
+
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *)
+            if kill -0 "$pid" 2>/dev/null; then
+                exe=$("$BB" readlink "/proc/$pid/exe" 2>/dev/null || true)
+                case "$exe" in
+                    */hostapd.albus)
+                        kill "$pid" 2>/dev/null || true
+                        "$BB" sleep 1
+                        ;;
+                esac
+            fi
+            ;;
+    esac
+    "$BB" rm -f "$HOTSPOT_HOSTAPD_PID" 2>/dev/null || true
+    "$BB" rm -rf "$HOTSPOT_CTRL" 2>/dev/null || true
+}
+
+hotspot_active_iface() {
+    if [ -f "$HOTSPOT_MARKER" ]; then
+        active=$(cat "$HOTSPOT_MARKER" 2>/dev/null || true)
+        case "$active" in
+            vif:*)
+                active=${active#vif:}
+                [ -n "$active" ] && {
+                    printf '%s\n' "$active"
+                    return 0
+                }
+                ;;
+        esac
+    fi
+    printf '%s\n' "$HOTSPOT_IFACE"
+}
+
+clear_hotspot_state() {
+    active_iface=$(hotspot_active_iface)
+    stop_udhcpd
+    stop_hostapd
+    "$BB" ip addr flush dev "$active_iface" 2>/dev/null || true
+    "$BB" rm -f "$HOTSPOT_MARKER" 2>/dev/null || true
+    delete_hotspot_vif >/dev/null 2>&1 || true
+}
+
+cleanup_hotspot_failure() {
+    clear_hotspot_state
+}
+
+start_hostapd_vif() {
+    stop_hostapd
+    "$BB" rm -rf "$HOTSPOT_CTRL"
+    "$BB" mkdir -p "$HOTSPOT_CTRL"
+    : > "$HOTSPOT_LOG"
+    "$HOSTAPD" -B -P "$HOTSPOT_HOSTAPD_PID" -f "$HOTSPOT_LOG" "$HOTSPOT_CONF"
+}
+
+wait_hotspot_ready() {
+    i=0
+    while [ "$i" -lt 20 ]; do
+        pid=""
+        [ -f "$HOTSPOT_HOSTAPD_PID" ] &&
+            pid=$(cat "$HOTSPOT_HOSTAPD_PID" 2>/dev/null || true)
+        case "$pid" in
+            ''|*[!0-9]*) ;;
+            *)
+                kill -0 "$pid" 2>/dev/null || return 1
+                if "$BB" grep -q 'AP-ENABLED' "$HOTSPOT_LOG" 2>/dev/null &&
+                   [ -d "/sys/class/net/$HOTSPOT_IFACE" ]; then
+                    return 0
+                fi
+                ;;
+        esac
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+start_udhcpd() {
+    : > "$HOTSPOT_LEASES"
+    : > "$HOTSPOT_DHCP_LOG"
+
+    {
+        printf '%s\n' 'start 192.168.43.20'
+        printf '%s\n' 'end 192.168.43.60'
+        printf 'interface %s\n' "$HOTSPOT_IFACE"
+        printf '%s\n' 'max_leases 41'
+        printf '%s\n' 'opt subnet 255.255.255.0'
+        printf '%s\n' 'opt router 192.168.43.1'
+        printf '%s\n' 'opt lease 86400'
+        printf 'lease_file %s\n' "$HOTSPOT_LEASES"
+        printf 'pidfile %s\n' "$HOTSPOT_PID"
+    } > "$HOTSPOT_DHCP" || return 1
+
+    "$BB" udhcpd -f "$HOTSPOT_DHCP" > "$HOTSPOT_DHCP_LOG" 2>&1 &
+    hp=$!
+    printf '%s\n' "$hp" > "$HOTSPOT_PID"
+    "$BB" sleep 1
+
+    kill -0 "$hp" 2>/dev/null || {
+        "$BB" rm -f "$HOTSPOT_PID"
+        return 1
+    }
+}
+
+cmd_hotspot_probe_vif() {
+    require_hotspot_payload
+    [ "$HOTSPOT_IFACE" != "$IFACE" ] || {
+        echo "WIFI_HOTSPOT_IFACE must differ from WIFI_IFACE."
+        return 2
+    }
+    [ ! -f "$HOTSPOT_MARKER" ] || {
+        echo "Hotspot is active. Stop it first: wifi hotspot stop"
+        return 1
+    }
+
+    prepare || return 1
+    delete_hotspot_vif >/dev/null 2>&1 || true
+
+    sta_before=""
+    if [ -S "$CTRL/$IFACE" ]; then
+        sta_before=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+            "$BB" sed -n 's/^wpa_state=//p')
+    fi
+
+    if ! create_hotspot_vif; then
+        echo "PRONTO/cfg80211 rejected AP virtual-interface creation."
+        dmesg 2>/dev/null |
+            "$BB" grep -iE 'wlan|cfg80211|softap|concurr|adapter' |
+            "$BB" tail -n 100 || true
+        return 1
+    fi
+
+    echo "--- AP VIF ---"
+    "$IW" dev "$HOTSPOT_IFACE" info 2>/dev/null || true
+    "$BB" ip link show dev "$HOTSPOT_IFACE" 2>/dev/null || true
+
+    sta_after=""
+    if [ -S "$CTRL/$IFACE" ]; then
+        sta_after=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+            "$BB" sed -n 's/^wpa_state=//p')
+    fi
+
+    if ! delete_hotspot_vif; then
+        echo "AP VIF was created but cleanup failed. Run: wifi logs"
+        return 1
+    fi
+
+    echo "AP VIF probe passed: created and removed $HOTSPOT_IFACE."
+    [ -n "$sta_before" ] &&
+        echo "STA state: $sta_before -> ${sta_after:-unknown}"
+}
+
+cmd_hotspot_start_vif() {
+    case "$#" in
+        2|3) ;;
+        *)
+            echo 'usage: wifi hotspot start-vif "SSID" "PASSWORD" [CHANNEL]'
+            return 2
+            ;;
+    esac
+
+    require_hotspot_payload
+    [ ! -f "$HOTSPOT_MARKER" ] || {
+        echo "A hotspot is already active. Stop it first: wifi hotspot stop"
+        return 1
+    }
+
+    prepare || return 1
+
+    requested_channel=${3:-6}
+    channel=$requested_channel
+    sta_state=""
+    if [ -S "$CTRL/$IFACE" ]; then
+        sta_state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+            "$BB" sed -n 's/^wpa_state=//p')
+    fi
+
+    if [ "$sta_state" = COMPLETED ]; then
+        sta_channel=$(current_sta_channel 2>/dev/null || true)
+        if [ -z "$sta_channel" ]; then
+            echo "STA is connected outside supported 2.4 GHz channels 1-11."
+            return 1
+        fi
+        if [ "$requested_channel" != "$sta_channel" ]; then
+            echo "PRONTO STA+AP is single-channel; forcing AP channel $sta_channel."
+        fi
+        channel=$sta_channel
+    fi
+
+    make_hotspot_conf "$1" "$2" "$channel" || return 1
+
+    if ! create_hotspot_vif; then
+        echo "Could not create AP VIF $HOTSPOT_IFACE."
+        dmesg 2>/dev/null |
+            "$BB" grep -iE 'wlan|cfg80211|softap|concurr|adapter' |
+            "$BB" tail -n 100 || true
+        return 1
+    fi
+
+    if ! start_hostapd_vif; then
+        echo "Could not start hostapd on $HOTSPOT_IFACE."
+        cleanup_hotspot_failure
+        return 1
+    fi
+
+    if ! wait_hotspot_ready; then
+        echo "hostapd never reached AP-ENABLED on $HOTSPOT_IFACE."
+        cleanup_hotspot_failure
+        return 1
+    fi
+
+    "$BB" ip addr flush dev "$HOTSPOT_IFACE" 2>/dev/null || true
+    "$BB" ip addr add "$HOTSPOT_CIDR" dev "$HOTSPOT_IFACE" || {
+        echo "Could not assign $HOTSPOT_CIDR to $HOTSPOT_IFACE."
+        cleanup_hotspot_failure
+        return 1
+    }
+    "$BB" ip link set "$HOTSPOT_IFACE" up 2>/dev/null || true
+
+    if ! start_udhcpd; then
+        echo "AP is enabled but DHCP failed."
+        cleanup_hotspot_failure
+        return 1
+    fi
+
+    printf 'vif:%s\n' "$HOTSPOT_IFACE" > "$HOTSPOT_MARKER"
+    "$BB" chmod 600 "$HOTSPOT_MARKER" 2>/dev/null || true
+
+    echo "Hotspot ready on $HOTSPOT_IFACE: $HOTSPOT_ADDR/24 (channel $channel)."
+    [ "$sta_state" = COMPLETED ] &&
+        echo "wlan0 STA remained connected; AP+STA concurrency is active."
+    echo "Internet/NAT sharing is not enabled in this first hardware-validation stage."
+    cmd_hotspot_status
+}
+
+cmd_hotspot_status() {
+    [ -f "$HOTSPOT_MARKER" ] || {
+        echo "Hotspot is not active."
+        return 1
+    }
+
+    echo "--- hotspot ---"
+    echo "interface: $(hotspot_active_iface)"
+    pid=""
+    [ -f "$HOTSPOT_HOSTAPD_PID" ] &&
+        pid=$(cat "$HOTSPOT_HOSTAPD_PID" 2>/dev/null || true)
+    case "$pid" in
+        ''|*[!0-9]*) echo "hostapd: stopped" ;;
+        *)
+            kill -0 "$pid" 2>/dev/null &&
+                echo "hostapd: running pid=$pid" ||
+                echo "hostapd: stopped (stale pid=$pid)"
+            ;;
+    esac
+    "$BB" tail -n 15 "$HOTSPOT_LOG" 2>/dev/null || true
+
+    echo "--- address ---"
+    "$BB" ip addr show dev "$HOTSPOT_IFACE" 2>/dev/null || true
+
+    echo "--- DHCP ---"
+    pid=""
+    [ -f "$HOTSPOT_PID" ] && pid=$(cat "$HOTSPOT_PID" 2>/dev/null || true)
+    case "$pid" in
+        ''|*[!0-9]*) echo "udhcpd: stopped" ;;
+        *)
+            kill -0 "$pid" 2>/dev/null &&
+                echo "udhcpd: running pid=$pid" ||
+                echo "udhcpd: stopped (stale pid=$pid)"
+            ;;
+    esac
+}
+
+cmd_hotspot_clients() {
+    [ -f "$HOTSPOT_MARKER" ] || {
+        echo "Hotspot is not active."
+        return 1
+    }
+    echo "Hotspot clients / neighbor table ($HOTSPOT_IFACE):"
+    "$BB" ip neigh show dev "$HOTSPOT_IFACE" 2>/dev/null || true
+}
+
+cmd_hotspot_stop() {
+    was_active=0
+    [ -f "$HOTSPOT_MARKER" ] && was_active=1
+    clear_hotspot_state
+
+    if [ "$was_active" -eq 1 ]; then
+        echo "Hotspot stopped; client interface $IFACE was left intact."
+    else
+        echo "Hotspot was not active; stale AP state was cleaned."
+    fi
 }
 
 escape_wpa_string() {
@@ -470,6 +908,10 @@ cmd_up() {
 }
 
 cmd_scan() {
+    [ ! -f "$HOTSPOT_MARKER" ] || {
+        echo "Hotspot is active. Stop it before scanning: wifi hotspot stop"
+        return 1
+    }
     [ -S "$CTRL/$IFACE" ] || cmd_up || return 1
     "$WPACLI" -p "$CTRL" -i "$IFACE" scan >/dev/null 2>&1 || true
     sleep 3
@@ -561,6 +1003,7 @@ cmd_disconnect() {
 }
 
 cmd_down() {
+    clear_hotspot_state
     stop_supplicant
     "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
     "$BB" ip link set "$IFACE" down 2>/dev/null || true
@@ -580,9 +1023,17 @@ cmd_logs() {
     "$BB" tail -n 180 "$WPA_LOG" 2>/dev/null || true
 
     echo
+    echo "===== hotspot hostapd ====="
+    "$BB" tail -n 180 "$HOTSPOT_LOG" 2>/dev/null || true
+
+    echo
+    echo "===== hotspot udhcpd ====="
+    "$BB" tail -n 100 "$HOTSPOT_DHCP_LOG" 2>/dev/null || true
+
+    echo
     echo "===== kernel WLAN/WCNSS ====="
     dmesg 2>/dev/null |
-        "$BB" grep -iE 'wlan|wcnss|pronto|prima|firmware|cfg80211|rfkill|pil|subsys' |
+        "$BB" grep -iE 'wlan|wcnss|pronto|prima|firmware|cfg80211|rfkill|pil|subsys|softap|concurr|adapter' |
         "$BB" tail -n 240
 
     echo
@@ -597,7 +1048,7 @@ cmd_logs() {
 cmd_test() {
     echo "Albus recovery Wi-Fi validation"
 
-    for f in "$BB" "$WPA" "$WPACLI" "$WCNSS" "$UDHCPC_SCRIPT"; do
+    for f in "$BB" "$WPA" "$WPACLI" "$HOSTAPD" "$IW" "$WCNSS" "$UDHCPC_SCRIPT"; do
         [ -x "$f" ] && echo "OK   $f" || echo "MISS $f"
     done
 
@@ -627,6 +1078,11 @@ Recovery Wi-Fi (Motorola albus)
   wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK
   wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE
   wifi connect-open "SSID"
+  wifi hotspot probe-vif
+  wifi hotspot start-vif "SSID" "PASSWORD" [CHANNEL]
+  wifi hotspot status
+  wifi hotspot clients
+  wifi hotspot stop
   wifi dhcp
   wifi status
   wifi ping HOST
@@ -650,6 +1106,22 @@ case "$cmd" in
     connect) cmd_connect "$@" ;;
     connect-sae) cmd_connect_sae "$@" ;;
     connect-open) cmd_connect_open "$@" ;;
+    hotspot)
+        sub=${1:-status}
+        [ "$#" -gt 0 ] && shift || true
+        case "$sub" in
+            probe-vif) cmd_hotspot_probe_vif ;;
+            start-vif) cmd_hotspot_start_vif "$@" ;;
+            status) cmd_hotspot_status ;;
+            clients) cmd_hotspot_clients ;;
+            stop) cmd_hotspot_stop ;;
+            *)
+                echo "Unknown hotspot command: $sub"
+                usage
+                exit 2
+                ;;
+        esac
+        ;;
     dhcp) do_dhcp ;;
     status) cmd_status ;;
     ping)
