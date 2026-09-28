@@ -147,10 +147,13 @@ jobs:
         run: |
           set -euo pipefail
           grep -qx 'CONFIG_UDHCPD=y' recovery-wifi/out/busybox.config
-          grep -q 'wifi_hotspot=ap0-vif-repeater-with-ipv4-nat' artifacts/build-info.txt
-          grep -q 'wifi_hotspot_nat=ap0-to-wlan0-masquerade-with-private-chains' artifacts/build-info.txt
+          grep -q 'wifi_hotspot=separate-ap0-vif-concurrency-and-repeater-modes' artifacts/build-info.txt
+          grep -q 'wifi_hotspot_nat=repeater-only-ap0-to-wlan0-masquerade-with-private-chains' artifacts/build-info.txt
           grep -q 'wifi_hotspot_persistence=tmpfs-only' artifacts/build-info.txt
 
+          grep -Fq 'cmd_hotspot_repeater()' recovery-wifi/wifi
+          grep -Fq 'repeater:*) echo "mode: repeater (AP+STA+NAT)"' recovery-wifi/wifi
+          grep -Fq 'Internet sharing/NAT is disabled in start-vif mode.' recovery-wifi/wifi
           grep -Fq 'ALBUS_HOTSPOT_FWD' recovery-wifi/wifi
           grep -Fq 'ALBUS_HOTSPOT_NAT' recovery-wifi/wifi
           grep -Fq 'MASQUERADE' recovery-wifi/wifi
