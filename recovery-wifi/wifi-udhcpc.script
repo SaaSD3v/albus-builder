@@ -1,0 +1,56 @@
+#!/sbin/sh
+STATE=/tmp/albus-wifi
+
+case "$1" in
+  deconfig)
+    ip addr flush dev "$interface" 2>/dev/null || true
+    if command -v setprop >/dev/null 2>&1; then
+      setprop "dhcp.$interface.ipaddress" ""
+      setprop "dhcp.$interface.gateway" ""
+      setprop "dhcp.$interface.dns1" ""
+      setprop "dhcp.$interface.dns2" ""
+      setprop net.dns1 ""
+      setprop net.dns2 ""
+    fi
+    ;;
+  bound|renew)
+    if [ -n "${subnet:-}" ]; then
+      ifconfig "$interface" "$ip" netmask "$subnet" up
+    else
+      ifconfig "$interface" "$ip" up
+    fi
+
+    ip route del default dev "$interface" 2>/dev/null || true
+    set -- ${router:-}
+    [ -n "${1:-}" ] && ip route add default via "$1" dev "$interface" 2>/dev/null || true
+
+    : > /etc/resolv.conf 2>/dev/null || true
+    for server in ${dns:-}; do
+      echo "nameserver $server" >> /etc/resolv.conf 2>/dev/null || true
+    done
+
+    if command -v setprop >/dev/null 2>&1; then
+      setprop "dhcp.$interface.ipaddress" "$ip"
+      set -- ${router:-}
+      setprop "dhcp.$interface.gateway" "${1:-}"
+      n=1
+      for server in ${dns:-}; do
+        setprop "dhcp.$interface.dns$n" "$server"
+        setprop "net.dns$n" "$server"
+        n=$((n + 1))
+        [ "$n" -gt 2 ] && break
+      done
+    fi
+
+    {
+      echo "interface=$interface"
+      echo "ip=$ip"
+      echo "subnet=${subnet:-}"
+      echo "router=${router:-}"
+      echo "dns=${dns:-}"
+      echo "lease=${lease:-}"
+    } > "$STATE/lease.env"
+    ;;
+esac
+
+exit 0
