@@ -48,7 +48,7 @@ def build_overlay(args):
         ("sbin/albus-WCNSS_qcom_cfg.ini", args.config.read_bytes(), stat.S_IFREG | 0o644),
         ("sbin/wpa_supplicant.albus", args.wpa.read_bytes(), stat.S_IFREG | 0o755),
         ("sbin/wpa_cli.albus", args.wpacli.read_bytes(), stat.S_IFREG | 0o755),
-        ("sbin/wpa_passphrase.albus", args.wpapass.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/wcnss-recovery-albus", args.wcnss.read_bytes(), stat.S_IFREG | 0o755),
         ("sbin/busybox.albus", args.busybox.read_bytes(), stat.S_IFREG | 0o755),
         ("sbin/wifi-udhcpc.script", args.udhcpc_script.read_bytes(), stat.S_IFREG | 0o755),
     ]
@@ -82,7 +82,7 @@ def build_overlay(args):
         b"sbin/albus-WCNSS_qcom_cfg.ini\0",
         b"sbin/wpa_supplicant.albus\0",
         b"sbin/wpa_cli.albus\0",
-        b"sbin/wpa_passphrase.albus\0",
+        b"sbin/wcnss-recovery-albus\0",
         b"sbin/busybox.albus\0",
         b"sbin/wifi-udhcpc.script\0",
     )
@@ -113,8 +113,8 @@ def verify_combined(base: Path, combined: Path):
         b"sbin/wifi\0",
         b"sbin/wpa_supplicant.albus\0",
         b"sbin/wpa_cli.albus\0",
-        b"sbin/wpa_passphrase.albus\0",
-        b"sbin/busybox.albus\0",
+        b"sbin/wcnss-recovery-albus\0",
+        b"sbin/busybox.albus\0"
         b"sbin/wifi-udhcpc.script\0",
         b"TRAILER!!!\0",
     )
@@ -135,7 +135,7 @@ def main():
     b.add_argument("--config", type=Path, required=True)
     b.add_argument("--wpa", type=Path, required=True)
     b.add_argument("--wpacli", type=Path, required=True)
-    b.add_argument("--wpapass", type=Path, required=True)
+    b.add_argument("--wcnss", type=Path, required=True)
     b.add_argument("--busybox", type=Path, required=True)
     b.add_argument("--udhcpc-script", type=Path, required=True)
     b.add_argument("--output", type=Path, required=True)
