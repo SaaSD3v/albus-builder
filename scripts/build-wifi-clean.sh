@@ -84,7 +84,7 @@ for cmd in prepare up start scan connect connect-sae connect-open networks forge
     die "missing Wi-Fi command in controller: $cmd"
 done
 
-for hotspot_cmd in create config delete probe-vif start-vif repeater status clients stop; do
+for hotspot_cmd in create config delete probe-vif start-vif repeater repeater-2g repeater-5g status clients stop; do
   grep -Fq "$hotspot_cmd" "$ROOT_DIR/recovery-wifi/wifi" ||
     die "missing hotspot subcommand in controller: $hotspot_cmd"
 done
@@ -111,12 +111,13 @@ sed -i \
 {
   printf 'bare_recovery_before_wifi_sha256=%s\n' "$BARE_WIFI_BASE_SHA256"
   printf 'wifi_overlay=channel-style-client-v2-second-lzma-initramfs\n'
-  printf 'wifi_commands=prepare,up,start,scan,connect,connect-sae,connect-open,networks,forget,forget-all,hotspot-create,hotspot-config,hotspot-delete,hotspot-probe-vif,hotspot-start-vif,hotspot-repeater,hotspot-status,hotspot-clients,hotspot-stop,dhcp,status,ping,disconnect,down,stop,logs,test\n'
+  printf 'wifi_commands=prepare,up,start,scan,connect,connect-sae,connect-open,networks,forget,forget-all,hotspot-create,hotspot-config,hotspot-delete,hotspot-probe-vif,hotspot-start-vif,hotspot-repeater,hotspot-repeater-2g,hotspot-repeater-5g,hotspot-status,hotspot-clients,hotspot-stop,dhcp,status,ping,disconnect,down,stop,logs,test\n'
   printf 'wifi_userspace=static-wpa-supplicant-2.9-plus-static-hostapd-2.9-plus-static-iw-plus-static-busybox-udhcpd-plus-static-legacy-iptables-plus-static-albus-wcnss-helper\n'
   printf 'droidspaces_iptables=legacy-static-multicall-with-iptables-save-restore-aliases\n'
   printf 'wifi_system_mount=not-required\n'
   printf 'wifi_vendor_service=not-used\n'
   printf 'wifi_hotspot=separate-ap0-vif-concurrency-and-repeater-modes\n'
+  printf 'wifi_repeater_bands=2.4GHz-and-5GHz-single-channel\n'
   printf 'wifi_hotspot_address=192.168.43.1/24\n'
   printf 'wifi_persistence_db=/data/local/wifi/.version\n'
   printf 'wifi_wlan_persistence=/data/local/wifi/wlan/networks\n'
