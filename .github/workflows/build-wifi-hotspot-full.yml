@@ -1,0 +1,148 @@
+name: Build recovery (Albus Full Wi-Fi + Hotspot)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - recovery-wifi-clean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: albus-wifi-hotspot-full-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ALBUS_RECOVERY_NETWORK_FLAGS: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            autoconf \
+            automake \
+            bc \
+            binutils-aarch64-linux-gnu \
+            bison \
+            build-essential \
+            curl \
+            file \
+            flex \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            git \
+            libelf-dev \
+            libssl-dev \
+            libtool \
+            lzma \
+            perl \
+            pkg-config \
+            python-is-python3 \
+            qemu-user-static \
+            unzip \
+            xz-utils
+
+      - name: Build full Wi-Fi + hotspot recovery
+        run: bash scripts/build-wifi-clean.sh
+
+      - name: Validate recovery kernel network flags
+        run: |
+          set -euo pipefail
+          CFG=artifacts/kernel.config
+          test -s "$CFG"
+          grep -qx '# CONFIG_ANDROID_PARANOID_NETWORK is not set' "$CFG"
+
+          for symbol in \
+            SYSVIPC POSIX_MQUEUE NAMESPACES UTS_NS IPC_NS USER_NS PID_NS NET_NS \
+            CGROUPS CGROUP_FREEZER CGROUP_DEVICE MEMCG CGROUP_SCHED FAIR_GROUP_SCHED \
+            CPUSETS CGROUP_CPUACCT DEVTMPFS VETH OVERLAY_FS \
+            BRIDGE BRIDGE_NETFILTER NETFILTER NETFILTER_ADVANCED NETFILTER_XTABLES \
+            NF_CONNTRACK NF_CONNTRACK_IPV4 NF_NAT NF_NAT_IPV4 NF_NAT_MASQUERADE_IPV4 \
+            NETFILTER_XT_NAT NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_TARGET_TCPMSS \
+            IP_NF_IPTABLES IP_NF_FILTER IP_NF_MANGLE IP_NF_NAT IP_NF_TARGET_MASQUERADE \
+            IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES \
+            IP_SET IP_SET_HASH_IP IP_SET_HASH_NET NETFILTER_XT_SET NETFILTER_XT_MATCH_RECENT
+          do
+            grep -qx "CONFIG_${symbol}=y" "$CFG" || {
+              echo "Missing required kernel flag: CONFIG_${symbol}=y"
+              exit 1
+            }
+          done
+
+      - name: Validate static legacy iptables payload
+        run: |
+          set -euo pipefail
+          test -x recovery-wifi/out/iptables.albus
+          file recovery-wifi/out/iptables.albus | tee iptables-file.txt
+          grep -q 'ARM aarch64' iptables-file.txt
+          grep -q 'statically linked' iptables-file.txt
+          grep -q 'droidspaces_iptables=legacy-static-multicall-with-iptables-save-restore-aliases' artifacts/build-info.txt
+
+          aarch64-linux-gnu-strings recovery-wifi/out/iptables.albus > iptables-strings.txt
+          for token in iptables iptables-save iptables-restore DNAT MASQUERADE addrtype; do
+            grep -Fq "$token" iptables-strings.txt
+          done
+
+          QEMU="$(command -v qemu-aarch64-static)"
+          SMOKE="$RUNNER_TEMP/albus-iptables-smoke"
+          rm -rf "$SMOKE"
+          mkdir -p "$SMOKE"
+          cp recovery-wifi/out/iptables.albus "$SMOKE/iptables.albus"
+          ln -s iptables.albus "$SMOKE/iptables"
+          ln -s iptables.albus "$SMOKE/iptables-save"
+          ln -s iptables.albus "$SMOKE/iptables-restore"
+
+          "$QEMU" "$SMOKE/iptables" --version | tee iptables-version.txt
+          grep -Eq '^iptables v1\.6\.2' iptables-version.txt
+          "$QEMU" "$SMOKE/iptables-restore" --version | grep -Eq '^iptables-restore v1\.6\.2'
+          "$QEMU" "$SMOKE/iptables" -m addrtype -h >/dev/null
+          "$QEMU" "$SMOKE/iptables" -t nat -j DNAT -h >/dev/null
+          "$QEMU" "$SMOKE/iptables" -t nat -j MASQUERADE -h >/dev/null
+
+      - name: Validate hotspot payload
+        run: |
+          set -euo pipefail
+          grep -qx 'CONFIG_UDHCPD=y' recovery-wifi/out/busybox.config
+          grep -q 'wifi_hotspot=transient-ap0-vif-hardware-validation' artifacts/build-info.txt
+          grep -q 'wifi_hotspot_persistence=tmpfs-only' artifacts/build-info.txt
+
+          for bin in hostapd.albus iw.albus; do
+            test -x "recovery-wifi/out/$bin"
+            file "recovery-wifi/out/$bin" | tee "$bin-file.txt"
+            grep -q 'ARM aarch64' "$bin-file.txt"
+            grep -q 'statically linked' "$bin-file.txt"
+          done
+
+          aarch64-linux-gnu-strings recovery-wifi/out/hostapd.albus | grep -Fq 'nl80211'
+          QEMU="$(command -v qemu-aarch64-static)"
+          "$QEMU" recovery-wifi/out/hostapd.albus -v > hostapd-version.txt 2>&1 || true
+          grep -Eq 'hostapd v2\.9' hostapd-version.txt
+          "$QEMU" recovery-wifi/out/iw.albus --version > iw-version.txt 2>&1 || true
+          grep -Eq 'iw version 5\.9' iw-version.txt
+
+      - name: Upload to GoFile
+        run: |
+          SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
+          RESPONSE=$(curl -s -X POST "https://${SERVER}.gofile.io/contents/uploadfile" \
+            -H "Authorization: Bearer ${{ secrets.GOFILE_TOKEN }}" \
+            -F "file=@artifacts/recovery.img")
+          echo "$RESPONSE" | jq .
+          DOWNLOAD_PAGE=$(echo "$RESPONSE" | jq -r '.data.downloadPage')
+          echo "GoFile link: $DOWNLOAD_PAGE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-albus-full-hotspot
+          path: artifacts/*
+          if-no-files-found: error
