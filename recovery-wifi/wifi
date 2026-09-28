@@ -722,6 +722,12 @@ make_hotspot_conf() {
     channel=$3
     target=${4:-$HOTSPOT_CONF}
 
+    hotspot_channel_band "$channel" || {
+        echo "Unsupported hotspot channel: $channel" >&2
+        echo "2.4 GHz: channels 1-13; 5 GHz: standard channels 36-165." >&2
+        return 1
+    }
+
     [ -n "$ssid" ] && [ "${#ssid}" -le 32 ] || {
         echo "Hotspot SSID must contain 1-32 characters." >&2
         return 1
@@ -730,13 +736,6 @@ make_hotspot_conf() {
         echo "Hotspot password must contain 8-63 characters." >&2
         return 1
     }
-    case "$channel" in
-        1|2|3|4|5|6|7|8|9|10|11) ;;
-        *)
-            echo "Hotspot channel must be between 1 and 11." >&2
-            return 1
-            ;;
-    esac
     if printf '%s' "$ssid" | "$BB" grep -q '[[:cntrl:]]' ||
        printf '%s' "$pass" | "$BB" grep -q '[[:cntrl:]]'; then
         echo "Hotspot SSID/password cannot contain control characters." >&2
@@ -748,7 +747,7 @@ make_hotspot_conf() {
         printf '%s\n' 'driver=nl80211'
         printf 'ctrl_interface=%s\n' "$HOTSPOT_CTRL"
         printf 'ssid=%s\n' "$ssid"
-        printf '%s\n' 'hw_mode=g'
+        printf 'hw_mode=%s\n' "$HOTSPOT_HW_MODE"
         printf 'channel=%s\n' "$channel"
         printf '%s\n' 'auth_algs=1'
         printf '%s\n' 'wpa=2'
@@ -877,6 +876,15 @@ cmd_hotspot_config() {
         echo "--- saved ap0 hotspot ---"
         echo "ssid: $saved_ssid"
         echo "security: WPA2-PSK/CCMP"
+        if hotspot_channel_band "$saved_channel"; then
+            case "$HOTSPOT_BAND" in
+                2g) saved_band_label='2.4 GHz' ;;
+                5g) saved_band_label='5 GHz' ;;
+            esac
+        else
+            saved_band_label='unknown'
+        fi
+        echo "band: $saved_band_label"
         echo "channel: $saved_channel"
         echo "password: configured (${#saved_pass} characters; hidden)"
         [ -f "$HOTSPOT_MARKER" ] && echo "runtime: active; saved changes apply on next start" || echo "runtime: inactive"
