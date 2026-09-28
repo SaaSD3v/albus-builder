@@ -114,6 +114,13 @@ require_config() {
     || die "required kernel configuration is missing: $expected_line"
 }
 
+require_not_enabled() {
+  local symbol="$1"
+  if grep -Eq "^CONFIG_${symbol}=(y|m)$" "$KERNEL_CONFIG"; then
+    die "kernel configuration must keep CONFIG_${symbol} disabled for CLI-minimal recovery"
+  fi
+}
+
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly ROOT_DIR
 readonly TEMP_ROOT="${RUNNER_TEMP:-/tmp}"
@@ -226,6 +233,44 @@ if [[ "${ALBUS_RECOVERY_NETWORK_FLAGS:-0}" == "1" ]]; then
   done
 fi
 
+if [[ "${ALBUS_RECOVERY_CLI_MINIMAL:-0}" == "1" ]]; then
+  note "Apply CLI-minimal headless kernel profile"
+
+  # Keep the GPU and virtual/input plumbing, but remove the physical display
+  # stack. This recovery is intended to be operated through ADB/VNC rather
+  # than the handset panel.
+  for symbol in \
+    FB FB_CMDLINE FB_CFB_FILLRECT FB_CFB_COPYAREA FB_CFB_IMAGEBLIT \
+    FB_MSM FB_MSM_MDSS_COMMON FB_MSM_MDSS FB_MSM_MDSS_WRITEBACK \
+    FB_MSM_MDSS_HDMI_PANEL FB_MSM_MDSS_XLOG_DEBUG FB_MSM_MDSS_XLOG_MMI \
+    MSM_DBA MSM_DBA_ADV7533 MSM_DBA_MOT_DBA MSM_DBA_DSI_MOD_DISPLAY \
+    MSM_SDE_ROTATOR MOD_DISPLAY SLIMPORT_MOD_DISPLAY PANEL_NOTIFICATIONS \
+    BACKLIGHT_LCD_SUPPORT BACKLIGHT_CLASS_DEVICE BACKLIGHT_GENERIC
+  do
+    "${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --disable "$symbol"
+  done
+
+  # Preserve the input core, EVDEV, UINPUT and physical keys. Only remove the
+  # touchscreen/desktop-pointer classes that are useless on an ADB-first
+  # recovery.
+  for symbol in \
+    INPUT_MOUSEDEV INPUT_JOYSTICK INPUT_TABLET INPUT_TOUCHSCREEN
+  do
+    "${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --disable "$symbol"
+  done
+
+  # Remove the camera pipeline while leaving the media/VIDC stack intact for
+  # possible hardware video decode/encode inside containers.
+  for symbol in \
+    MSM_CAMERA MSMB_CAMERA MSM_CAMERA_SENSOR MSM_CPP MSM_CCI \
+    MSM_CSI20_HEADER MSM_CSI22_HEADER MSM_CSI30_HEADER MSM_CSI31_HEADER \
+    MSM_CSIPHY MSM_CSID MSM_EEPROM MSM_ISPIF MSM_V4L2_VIDEO_OVERLAY_DEVICE \
+    MSMB_JPEG MSM_FD
+  do
+    "${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --disable "$symbol"
+  done
+fi
+
 make "${MAKE_ARGS[@]}" olddefconfig
 
 if [[ "${ALBUS_RECOVERY_NETWORK_FLAGS:-0}" != "1" ]]; then
@@ -268,6 +313,28 @@ else
   else
     echo "NOTE: CONFIG_CGROUP_PIDS is unavailable in the pinned 3.18 source; not faking it."
   fi
+fi
+
+if [[ "${ALBUS_RECOVERY_CLI_MINIMAL:-0}" == "1" ]]; then
+  for expected in \
+    'CONFIG_INPUT=y' 'CONFIG_INPUT_EVDEV=y' 'CONFIG_INPUT_UINPUT=y' \
+    'CONFIG_INPUT_KEYBOARD=y' 'CONFIG_KEYBOARD_GPIO=y' \
+    'CONFIG_MSM_KGSL=y' 'CONFIG_MSM_KGSL_IOMMU=y' \
+    'CONFIG_MSM_VIDC_V4L2=y'
+  do
+    require_config "$expected"
+  done
+
+  for symbol in \
+    FB FB_MSM FB_MSM_MDSS_COMMON FB_MSM_MDSS FB_MSM_MDSS_WRITEBACK \
+    FB_MSM_MDSS_HDMI_PANEL MSM_DBA MSM_SDE_ROTATOR MOD_DISPLAY \
+    SLIMPORT_MOD_DISPLAY PANEL_NOTIFICATIONS BACKLIGHT_LCD_SUPPORT \
+    INPUT_MOUSEDEV INPUT_JOYSTICK INPUT_TABLET INPUT_TOUCHSCREEN \
+    MSM_CAMERA MSMB_CAMERA MSM_CAMERA_SENSOR MSM_CPP MSM_CCI MSM_CSIPHY \
+    MSM_CSID MSM_EEPROM MSM_ISPIF MSMB_JPEG MSM_FD
+  do
+    require_not_enabled "$symbol"
+  done
 fi
 
 if grep -Eq '^(# )?CONFIG_KSU([_= ]|$)' "$KERNEL_CONFIG"; then
@@ -434,6 +501,10 @@ readonly CONFIG_SHA256
   printf 'twrp_base=%s\n' "$TWRP_FILE"
   printf 'twrp_base_sha256=%s\n' "$TWRP_SHA256"
   printf 'recovery_size=%s\n' "$FINAL_SIZE"
+  printf 'kernel_size=%s\n' "$KERNEL_SIZE"
+  if [[ "${ALBUS_RECOVERY_CLI_MINIMAL:-0}" == "1" ]]; then
+    printf 'kernel_profile=cli-minimal-display-touch-camera-off\n'
+  fi
   printf 'recovery_partition_limit=%s\n' "$RECOVERY_PARTITION_SIZE"
   printf 'recovery_sha256=%s\n' "$FINAL_SHA256"
   printf 'kernel_sha256=%s\n' "$KERNEL_SHA256"
