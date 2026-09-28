@@ -48,6 +48,8 @@ def build_overlay(args):
         ("sbin/albus-WCNSS_qcom_cfg.ini", args.config.read_bytes(), stat.S_IFREG | 0o644),
         ("sbin/wpa_supplicant.albus", args.wpa.read_bytes(), stat.S_IFREG | 0o755),
         ("sbin/wpa_cli.albus", args.wpacli.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/hostapd.albus", args.hostapd.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/iw.albus", args.iw.read_bytes(), stat.S_IFREG | 0o755),
         ("sbin/wcnss-recovery-albus", args.wcnss.read_bytes(), stat.S_IFREG | 0o755),
         ("sbin/busybox.albus", args.busybox.read_bytes(), stat.S_IFREG | 0o755),
         ("sbin/iptables.albus", args.iptables.read_bytes(), stat.S_IFREG | 0o755),
@@ -86,6 +88,8 @@ def build_overlay(args):
         b"sbin/albus-WCNSS_qcom_cfg.ini\0",
         b"sbin/wpa_supplicant.albus\0",
         b"sbin/wpa_cli.albus\0",
+        b"sbin/hostapd.albus\0",
+        b"sbin/iw.albus\0",
         b"sbin/wcnss-recovery-albus\0",
         b"sbin/busybox.albus\0",
         b"sbin/iptables.albus\0",
@@ -121,6 +125,8 @@ def verify_combined(base: Path, combined: Path):
         b"sbin/wifi\0",
         b"sbin/wpa_supplicant.albus\0",
         b"sbin/wpa_cli.albus\0",
+        b"sbin/hostapd.albus\0",
+        b"sbin/iw.albus\0",
         b"sbin/wcnss-recovery-albus\0",
         b"sbin/busybox.albus\0",
         b"sbin/iptables.albus\0",
@@ -147,6 +153,8 @@ def main():
     b.add_argument("--config", type=Path, required=True)
     b.add_argument("--wpa", type=Path, required=True)
     b.add_argument("--wpacli", type=Path, required=True)
+    b.add_argument("--hostapd", type=Path, required=True)
+    b.add_argument("--iw", type=Path, required=True)
     b.add_argument("--wcnss", type=Path, required=True)
     b.add_argument("--busybox", type=Path, required=True)
     b.add_argument("--iptables", type=Path, required=True)
