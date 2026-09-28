@@ -147,10 +147,26 @@ jobs:
         run: |
           set -euo pipefail
           grep -qx 'CONFIG_UDHCPD=y' recovery-wifi/out/busybox.config
+          for symbol in SHA256SUM CP MV CHOWN SYNC; do
+            grep -qx "CONFIG_${symbol}=y" recovery-wifi/out/busybox.config
+          done
+
+          sh -n recovery-wifi/wifi
           grep -q 'wifi_hotspot=separate-ap0-vif-concurrency-and-repeater-modes' artifacts/build-info.txt
           grep -q 'wifi_hotspot_nat=repeater-only-ap0-to-wlan0-masquerade-with-private-chains' artifacts/build-info.txt
-          grep -q 'wifi_hotspot_persistence=tmpfs-only' artifacts/build-info.txt
+          grep -q 'wifi_persistence_db=/data/local/wifi/.version' artifacts/build-info.txt
+          grep -q 'wifi_wlan_persistence=/data/local/wifi/wlan/networks' artifacts/build-info.txt
+          grep -q 'wifi_ap0_persistence=/data/local/wifi/ap0/hotspot.conf' artifacts/build-info.txt
+          grep -q 'wifi_hotspot_persistence=data-local-wifi-ap0-v1' artifacts/build-info.txt
 
+          grep -Fq 'WIFI_WLAN_NETWORKS=$WIFI_WLAN_DIR/networks' recovery-wifi/wifi
+          grep -Fq 'WIFI_AP_CONF=$WIFI_AP_DIR/hotspot.conf' recovery-wifi/wifi
+          grep -Fq 'commit_validated_network()' recovery-wifi/wifi
+          grep -Fq 'build_runtime_from_persistent()' recovery-wifi/wifi
+          grep -Fq 'cmd_networks()' recovery-wifi/wifi
+          grep -Fq 'cmd_forget()' recovery-wifi/wifi
+          grep -Fq 'cmd_hotspot_create()' recovery-wifi/wifi
+          grep -Fq 'cmd_hotspot_config()' recovery-wifi/wifi
           grep -Fq 'cmd_hotspot_repeater()' recovery-wifi/wifi
           grep -Fq 'repeater:*) echo "mode: repeater (AP+STA+NAT)"' recovery-wifi/wifi
           grep -Fq 'Internet sharing/NAT is disabled in start-vif mode.' recovery-wifi/wifi
