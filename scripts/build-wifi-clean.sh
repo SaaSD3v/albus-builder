@@ -4,9 +4,8 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR_PRE="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
-# Build the exact known-good bare recovery first. This script is sourced so
-# its pinned WORK_DIR, MAGISKBOOT, FINAL_IMAGE and verification state remain
-# available for the Wi-Fi overlay step.
+# Build the exact known-good bare recovery first. Source it so the pinned
+# WORK_DIR, MAGISKBOOT, FINAL_IMAGE and verification state remain available.
 # shellcheck disable=SC1091
 source "$ROOT_DIR_PRE/scripts/build-bare.sh"
 
@@ -15,6 +14,8 @@ note "Inject clean Albus recovery Wi-Fi overlay"
 readonly WIFI_BASE_IMAGE="${WORK_DIR}/recovery-bare-before-wifi.img"
 readonly WIFI_REPACK_DIR="${WORK_DIR}/wifi-repack"
 readonly WIFI_VERIFY_DIR="${WORK_DIR}/wifi-verify"
+readonly WIFI_BASE_RAMDISK="${WORK_DIR}/ramdisk-bare.lzma"
+readonly WIFI_OVERLAY_RAMDISK="${WORK_DIR}/ramdisk-wifi-overlay.lzma"
 
 cp "$FINAL_IMAGE" "$WIFI_BASE_IMAGE"
 mkdir -p "$WIFI_REPACK_DIR"
@@ -23,21 +24,27 @@ mkdir -p "$WIFI_REPACK_DIR"
   cd "$WIFI_REPACK_DIR"
   "$MAGISKBOOT" unpack -n "$WIFI_BASE_IMAGE"
 
-  [[ -f ramdisk.cpio ]] || die "magiskboot did not extract ramdisk.cpio for Wi-Fi overlay"
+  [[ -f ramdisk.cpio ]] ||
+    die "magiskboot did not extract ramdisk.cpio for Wi-Fi overlay"
 
-  # -n keeps every boot component byte-for-byte as stored. The Albus TeamWin
-  # ramdisk is LZMA, so decompress only that component before cpio editing.
-  # Keep the already-compressed kernel untouched; magiskboot repack detects it
-  # as compressed and does not recompress that component.
-  mv ramdisk.cpio ramdisk.cpio.lzma
-  "$MAGISKBOOT" decompress ramdisk.cpio.lzma ramdisk.cpio
-  rm -f ramdisk.cpio.lzma
+  # Keep the TeamWin LZMA ramdisk byte-for-byte. Build a second standalone
+  # newc archive using the SAME LZMA-alone parameters and append it. This is
+  # the same multi-member initramfs strategy used by the working Channel path.
+  cp ramdisk.cpio "$WIFI_BASE_RAMDISK"
 
-  "$MAGISKBOOT" cpio ramdisk.cpio \
-    "add 0755 sbin/wifi $ROOT_DIR/recovery-wifi/wifi" \
-    "add 0644 sbin/albus-WCNSS_qcom_cfg.ini $ROOT_DIR/recovery-wifi/WCNSS_qcom_cfg.ini"
+  python3 "$ROOT_DIR/recovery-wifi/build-overlay.py" build \
+    --base "$WIFI_BASE_RAMDISK" \
+    --wifi "$ROOT_DIR/recovery-wifi/wifi" \
+    --config "$ROOT_DIR/recovery-wifi/WCNSS_qcom_cfg.ini" \
+    --output "$WIFI_OVERLAY_RAMDISK"
 
-  "$MAGISKBOOT" repack "$WIFI_BASE_IMAGE" "$FINAL_IMAGE"
+  cat "$WIFI_OVERLAY_RAMDISK" >> ramdisk.cpio
+
+  python3 "$ROOT_DIR/recovery-wifi/build-overlay.py" verify \
+    --base "$WIFI_BASE_RAMDISK" \
+    --combined ramdisk.cpio
+
+  "$MAGISKBOOT" repack -n "$WIFI_BASE_IMAGE" "$FINAL_IMAGE"
 )
 
 [[ -s "$FINAL_IMAGE" ]] || die "Wi-Fi recovery image was not produced"
@@ -58,26 +65,19 @@ mkdir -p "$WIFI_VERIFY_DIR"
   cmp -s "$DT_IMAGE" extra ||
     die "DT changed while injecting the Wi-Fi overlay"
 
-  mv ramdisk.cpio ramdisk.cpio.lzma
-  "$MAGISKBOOT" decompress ramdisk.cpio.lzma ramdisk.cpio
-  rm -f ramdisk.cpio.lzma
-
-  mkdir extracted
-  (
-    cd extracted
-    "$MAGISKBOOT" cpio ../ramdisk.cpio "extract"
-
-    [[ -x sbin/wifi ]] || die "/sbin/wifi is missing or not executable"
-    [[ -s sbin/albus-WCNSS_qcom_cfg.ini ]] ||
-      die "Albus WCNSS fallback config is missing"
-
-    grep -Fq 'wifi prepare' sbin/wifi ||
-      die "unexpected /sbin/wifi payload"
-    ! grep -Fq 'LD_LIBRARY_PATH=' sbin/wifi ||
-      grep -Fq 'LD_LIBRARY_PATH=/vendor/lib64:/vendor/lib:/system/lib64:/system/lib \\' sbin/wifi ||
-      die "Wi-Fi script contains an unexpected global LD_LIBRARY_PATH"
-  )
+  python3 "$ROOT_DIR/recovery-wifi/build-overlay.py" verify \
+    --base "$WIFI_BASE_RAMDISK" \
+    --combined ramdisk.cpio
 )
+
+grep -Fq 'wifi prepare' "$ROOT_DIR/recovery-wifi/wifi" ||
+  die "unexpected /sbin/wifi payload"
+
+# A vendor LD_LIBRARY_PATH is allowed only on the one wcnss_service invocation,
+# never as an exported recovery-wide environment variable.
+if grep -Eq '^[[:space:]]*export[[:space:]]+LD_LIBRARY_PATH' "$ROOT_DIR/recovery-wifi/wifi"; then
+  die "Wi-Fi script exports LD_LIBRARY_PATH globally"
+fi
 
 WIFI_FINAL_SIZE="$(stat -c '%s' "$FINAL_IMAGE")"
 readonly WIFI_FINAL_SIZE
@@ -96,7 +96,7 @@ sed -i \
 
 {
   printf 'bare_recovery_before_wifi_sha256=%s\n' "$BARE_WIFI_BASE_SHA256"
-  printf 'wifi_overlay=clean-v1\n'
+  printf 'wifi_overlay=clean-v2-second-lzma-initramfs\n'
   printf 'wifi_commands=help,test,prepare,up,status,down,logs\n'
   printf 'wifi_userspace=stock-recovery-tools-plus-stock-vendor-wcnss\n'
   printf 'wifi_hotspot=not-included\n'
