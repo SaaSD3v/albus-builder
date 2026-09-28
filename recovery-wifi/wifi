@@ -1483,7 +1483,9 @@ cmd_hotspot_status() {
     echo "--- hotspot ---"
     hotspot_mode=$(cat "$HOTSPOT_MARKER" 2>/dev/null || true)
     case "$hotspot_mode" in
-        repeater:*) echo "mode: repeater (AP+STA+NAT)" ;;
+        repeater-2g:*) echo "mode: repeater 2.4 GHz (AP+STA+NAT)" ;;
+        repeater-5g:*) echo "mode: repeater 5 GHz (AP+STA+NAT)" ;;
+        repeater:*) echo "mode: repeater legacy/auto (AP+STA+NAT)" ;;
         vif:*) echo "mode: VIF concurrency (AP+STA, no NAT)" ;;
         *) echo "mode: unknown" ;;
     esac
@@ -1909,7 +1911,9 @@ Recovery Wi-Fi (Motorola albus)
   wifi hotspot delete
   wifi hotspot probe-vif
   wifi hotspot start-vif ["SSID" "PASSWORD" [CHANNEL]] # AP+STA, no NAT; no args = saved ap0
-  wifi hotspot repeater ["SSID" "PASSWORD" [CHANNEL]]  # AP+STA+NAT; no args = saved ap0
+  wifi hotspot repeater ["SSID" "PASSWORD" [CHANNEL]]   # auto: follows wlan0 band/channel
+  wifi hotspot repeater-2g ["SSID" "PASSWORD" [CHANNEL]] # require wlan0 on 2.4 GHz
+  wifi hotspot repeater-5g ["SSID" "PASSWORD" [CHANNEL]] # require wlan0 on 5 GHz
   wifi hotspot status
   wifi hotspot clients
   wifi hotspot stop
@@ -1949,6 +1953,8 @@ case "$cmd" in
             probe-vif) cmd_hotspot_probe_vif ;;
             start-vif) cmd_hotspot_start_vif "$@" ;;
             repeater) cmd_hotspot_repeater "$@" ;;
+            repeater-2g) cmd_hotspot_repeater_2g "$@" ;;
+            repeater-5g) cmd_hotspot_repeater_5g "$@" ;;
             status) cmd_hotspot_status ;;
             clients) cmd_hotspot_clients ;;
             stop) cmd_hotspot_stop ;;
