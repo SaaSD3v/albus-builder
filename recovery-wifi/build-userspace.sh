@@ -11,6 +11,7 @@ CC=${CROSS}gcc
 STRIP=${CROSS}strip
 
 WPA_TAG=hostap_2_9
+WPA_COMMIT=ca8c2bd28ad53f431d6ee60ef754e98cfdb4c17b
 OPENSSL_TAG=OpenSSL_1_1_1w
 LIBNL_TAG=libnl3_2_25
 BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
@@ -49,9 +50,31 @@ popd >/dev/null
 
 echo "==> wpa_supplicant"
 git init "$SRC/wpa"
-git -C "$SRC/wpa" remote add origin https://git.w1.fi/hostap.git
-git -C "$SRC/wpa" fetch --depth=1 origin "refs/tags/$WPA_TAG"
-git -C "$SRC/wpa" checkout --detach FETCH_HEAD
+hostap_fetched=0
+for hostap_origin in \
+  https://github.com/rsta2/hostap.git \
+  https://git.w1.fi/hostap.git
+do
+  git -C "$SRC/wpa" remote remove origin >/dev/null 2>&1 || true
+  git -C "$SRC/wpa" remote add origin "$hostap_origin"
+  if timeout 75 git -C "$SRC/wpa" -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 \
+      fetch --depth=1 origin "refs/tags/$WPA_TAG"; then
+    resolved=$(git -C "$SRC/wpa" rev-parse 'FETCH_HEAD^{commit}')
+    if [ "$resolved" = "$WPA_COMMIT" ]; then
+      echo "Pinned hostap source: $hostap_origin @ $resolved"
+      hostap_fetched=1
+      break
+    fi
+    echo "Rejecting hostap mirror with unexpected commit: $resolved" >&2
+  else
+    echo "Hostap source unavailable: $hostap_origin" >&2
+  fi
+done
+[ "$hostap_fetched" -eq 1 ] || {
+  echo "Could not fetch pinned hostap $WPA_TAG / $WPA_COMMIT" >&2
+  exit 1
+}
+git -C "$SRC/wpa" checkout --detach "$WPA_COMMIT"
 cp "$ROOT/recovery-wifi/wpa_supplicant.config" "$SRC/wpa/wpa_supplicant/.config"
 cat >> "$SRC/wpa/wpa_supplicant/.config" <<EOF
 CFLAGS += -Os -ffunction-sections -fdata-sections -I$PREFIX/include/libnl3 -I$SRC/openssl/include
@@ -124,7 +147,7 @@ enable_busybox_symbol() {
   fi
 }
 
-for symbol in UDHCPD SHA256SUM CP MV CHOWN SYNC TIMEOUT; do
+for symbol in UDHCPD SHA256SUM CP MV CHOWN SYNC TIMEOUT DATE NTPD NSLOOKUP; do
   enable_busybox_symbol "$symbol"
 done
 
@@ -136,7 +159,8 @@ make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE="$CROSS"
 for symbol in \
   CONFIG_UDHCPC CONFIG_UDHCPD CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
   CONFIG_TAIL CONFIG_PKILL CONFIG_SLEEP CONFIG_CAT CONFIG_CHMOD CONFIG_MKDIR CONFIG_AWK \
-  CONFIG_RM CONFIG_READLINK CONFIG_SHA256SUM CONFIG_CP CONFIG_MV CONFIG_CHOWN CONFIG_SYNC CONFIG_TIMEOUT
+  CONFIG_RM CONFIG_READLINK CONFIG_SHA256SUM CONFIG_CP CONFIG_MV CONFIG_CHOWN CONFIG_SYNC CONFIG_TIMEOUT \
+  CONFIG_DATE CONFIG_NTPD CONFIG_NSLOOKUP
 do
   grep -qx "$symbol=y" .config || {
     echo "Missing required BusyBox setting: $symbol=y" >&2
@@ -187,6 +211,7 @@ echo "==> static Albus WCNSS helper"
   -o "$OUT/wcnss-recovery-albus"
 
 cp "$ROOT/recovery-wifi/wifi-udhcpc.script" "$OUT/wifi-udhcpc.script"
+cp "$ROOT/recovery-wifi/recovery-time-sync-albus" "$OUT/recovery-time-sync-albus"
 
 chmod 0755 \
   "$OUT/wpa_supplicant.albus" \
@@ -196,7 +221,8 @@ chmod 0755 \
   "$OUT/iw.albus" \
   "$OUT/iptables.albus" \
   "$OUT/wcnss-recovery-albus" \
-  "$OUT/wifi-udhcpc.script"
+  "$OUT/wifi-udhcpc.script" \
+  "$OUT/recovery-time-sync-albus"
 
 for f in \
   "$OUT/wpa_supplicant.albus" \
