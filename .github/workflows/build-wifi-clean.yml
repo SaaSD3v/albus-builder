@@ -45,6 +45,7 @@ jobs:
             perl \
             pkg-config \
             python-is-python3 \
+            qemu-user-static \
             unzip \
             xz-utils
 
@@ -53,11 +54,45 @@ jobs:
 
       - name: Validate static legacy iptables payload
         run: |
+          set -euo pipefail
           test -x recovery-wifi/out/iptables.albus
           file recovery-wifi/out/iptables.albus | tee iptables-file.txt
           grep -q 'ARM aarch64' iptables-file.txt
           grep -q 'statically linked' iptables-file.txt
           grep -q 'droidspaces_iptables=legacy-static-multicall-with-iptables-save-restore-aliases' artifacts/build-info.txt
+
+          aarch64-linux-gnu-strings recovery-wifi/out/iptables.albus > iptables-strings.txt
+          for token in iptables iptables-save iptables-restore DNAT MASQUERADE addrtype; do
+            grep -Fq "$token" iptables-strings.txt || {
+              echo "Missing built-in legacy iptables token/extension: $token"
+              exit 1
+            }
+          done
+
+          QEMU="$(command -v qemu-aarch64-static)"
+          test -x "$QEMU"
+          SMOKE="$RUNNER_TEMP/albus-iptables-smoke"
+          rm -rf "$SMOKE"
+          mkdir -p "$SMOKE"
+          cp recovery-wifi/out/iptables.albus "$SMOKE/iptables.albus"
+          ln -s iptables.albus "$SMOKE/iptables"
+          ln -s iptables.albus "$SMOKE/iptables-save"
+          ln -s iptables.albus "$SMOKE/iptables-restore"
+
+          "$QEMU" "$SMOKE/iptables" --version | tee iptables-version.txt
+          grep -Eq '^iptables v1\.6\.2' iptables-version.txt
+
+          set +e
+          save_probe=$("$QEMU" "$SMOKE/iptables-save" --albus-invalid-probe 2>&1)
+          save_rc=$?
+          set -e
+          [ "$save_rc" -ne 0 ]
+          printf '%s\n' "$save_probe" | grep -Fq 'iptables-save.8'
+
+          "$QEMU" "$SMOKE/iptables-restore" --version | grep -Eq '^iptables-restore v1\.6\.2'
+          "$QEMU" "$SMOKE/iptables" -m addrtype -h >/dev/null
+          "$QEMU" "$SMOKE/iptables" -t nat -j DNAT -h >/dev/null
+          "$QEMU" "$SMOKE/iptables" -t nat -j MASQUERADE -h >/dev/null
 
       - name: Upload to GoFile
         run: |
