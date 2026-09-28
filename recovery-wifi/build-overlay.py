@@ -58,6 +58,10 @@ def build_overlay(args):
         ("sbin/iptables-restore", b"iptables.albus", stat.S_IFLNK | 0o777),
         ("sbin/wifi-udhcpc.script", args.udhcpc_script.read_bytes(), stat.S_IFREG | 0o755),
         ("sbin/recovery-time-sync-albus", args.time_sync.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/recovery-time-sync", b"recovery-time-sync-albus", stat.S_IFLNK | 0o777),
+        ("sbin/rctools", args.rctools.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/ds-recovery-check", args.dscheck.read_bytes(), stat.S_IFREG | 0o755),
+        ("init.recovery.service.rc", args.init_recovery_rc.read_bytes(), stat.S_IFREG | 0o644),
     ]
 
     raw = bytearray()
@@ -99,6 +103,10 @@ def build_overlay(args):
         b"sbin/iptables-restore\0",
         b"sbin/wifi-udhcpc.script\0",
         b"sbin/recovery-time-sync-albus\0",
+        b"sbin/recovery-time-sync\0",
+        b"sbin/rctools\0",
+        b"sbin/ds-recovery-check\0",
+        b"init.recovery.service.rc\0",
     )
     for marker in required:
         if marker not in check:
@@ -137,6 +145,10 @@ def verify_combined(base: Path, combined: Path):
         b"sbin/iptables-restore\0",
         b"sbin/wifi-udhcpc.script\0",
         b"sbin/recovery-time-sync-albus\0",
+        b"sbin/recovery-time-sync\0",
+        b"sbin/rctools\0",
+        b"sbin/ds-recovery-check\0",
+        b"init.recovery.service.rc\0",
         b"TRAILER!!!\0",
     )
     for marker in required:
@@ -163,6 +175,9 @@ def main():
     b.add_argument("--iptables", type=Path, required=True)
     b.add_argument("--udhcpc-script", type=Path, required=True)
     b.add_argument("--time-sync", type=Path, required=True)
+    b.add_argument("--rctools", type=Path, required=True)
+    b.add_argument("--dscheck", type=Path, required=True)
+    b.add_argument("--init-recovery-rc", type=Path, required=True)
     b.add_argument("--output", type=Path, required=True)
 
     v = sub.add_parser("verify")
