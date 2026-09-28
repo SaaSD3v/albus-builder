@@ -1,0 +1,6 @@
+# Albus CLI-minimal headless recovery.
+# The stock TWRP GUI/recovery service is intentionally not defined here.
+# RCTools provides mounts and recovery control without /system/bin/recovery.
+
+on early-init
+    write /sys/fs/selinux/enforce 0
