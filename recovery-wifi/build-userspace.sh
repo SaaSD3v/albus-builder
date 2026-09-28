@@ -66,10 +66,9 @@ make -j"$(nproc)" \
   CC="$CC" \
   PKG_CONFIG="pkg-config --static" \
   LDFLAGS='-static -Wl,--gc-sections' \
-  wpa_supplicant wpa_cli wpa_passphrase
+  wpa_supplicant wpa_cli
 cp wpa_supplicant "$OUT/wpa_supplicant.albus"
 cp wpa_cli "$OUT/wpa_cli.albus"
-cp wpa_passphrase "$OUT/wpa_passphrase.albus"
 popd >/dev/null
 
 echo "==> BusyBox"
@@ -98,20 +97,26 @@ cp busybox "$OUT/busybox.albus"
 cp .config "$OUT/busybox.config"
 popd >/dev/null
 
+echo "==> static Albus WCNSS helper"
+"$CC" -static -Os -ffunction-sections -fdata-sections \
+  -Wl,--gc-sections \
+  "$ROOT/recovery-wifi/wcnss-recovery-albus.c" \
+  -o "$OUT/wcnss-recovery-albus"
+
 cp "$ROOT/recovery-wifi/wifi-udhcpc.script" "$OUT/wifi-udhcpc.script"
 
 chmod 0755 \
   "$OUT/wpa_supplicant.albus" \
   "$OUT/wpa_cli.albus" \
-  "$OUT/wpa_passphrase.albus" \
   "$OUT/busybox.albus" \
+  "$OUT/wcnss-recovery-albus" \
   "$OUT/wifi-udhcpc.script"
 
 for f in \
   "$OUT/wpa_supplicant.albus" \
   "$OUT/wpa_cli.albus" \
-  "$OUT/wpa_passphrase.albus" \
-  "$OUT/busybox.albus"
+  "$OUT/busybox.albus" \
+  "$OUT/wcnss-recovery-albus"
 do
   "$STRIP" --strip-all "$f"
   file "$f"
