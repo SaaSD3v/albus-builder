@@ -7,7 +7,8 @@ export PATH
 
 BB=/sbin/busybox.albus
 WIFI=/sbin/wifi
-TIMESYNC=/sbin/recovery-time-sync-albus
+TIMESYNC=/sbin/recovery-time-sync
+DSCHECK=/sbin/ds-recovery-check
 BYNAME=/dev/block/bootdevice/by-name
 MOUNT_TIMEOUT=${RCTOOLS_MOUNT_TIMEOUT:-8}
 
@@ -289,12 +290,15 @@ rctools hotspot status
 rctools hotspot stop
   Same hotspot/repeater command names as Channel.
 
+rctools droidspaces check
+  Run the recovery-side DroidSpaces capability preflight.
+
 rctools time status
 rctools time sync
 rctools time restore
   Recovery clock helper backed by /data/local/wifi/.last-good-epoch.
 
-Compatibility backend remains available as /sbin/wifi.
+Compatibility backends remain available as /sbin/wifi and /sbin/ds-recovery-check.
 RCTools is the intended user-facing CLI; no TWRP recovery service is required.
 EOF
 }
@@ -342,6 +346,12 @@ case "$cmd" in
     hotspot)
         [ -x "$WIFI" ] || { err "Wi-Fi backend missing: $WIFI"; exit 1; }
         exec "$WIFI" hotspot "$@" ;;
+    droidspaces|ds)
+        sub="${1:-check}"; [ "$#" -gt 0 ] && shift || true
+        case "$sub" in
+            check) exec "$DSCHECK" "$@" ;;
+            *) err "usage: rctools droidspaces check"; exit 2 ;;
+        esac ;;
     time)
         sub="${1:-status}"; [ "$#" -gt 0 ] && shift || true
         case "$sub" in
