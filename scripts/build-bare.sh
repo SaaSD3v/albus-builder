@@ -188,19 +188,87 @@ readonly -a MAKE_ARGS=(
   "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
 )
 
-note "Configure the bare kernel for recovery (no DroidSpaces flags)"
+note "Configure the bare kernel for recovery"
 make "${MAKE_ARGS[@]}" albus_defconfig
 readonly KERNEL_CONFIG="${KERNEL_OUT}/.config"
 readonly CONFIG_BEFORE_OVERRIDES="${WORK_DIR}/config-before-overrides"
 cp "$KERNEL_CONFIG" "$CONFIG_BEFORE_OVERRIDES"
 
 "${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --enable RD_LZMA
+
+if [[ "${ALBUS_RECOVERY_NETWORK_FLAGS:-0}" == "1" ]]; then
+  note "Apply recovery/DroidSpaces network compatibility flags"
+
+  # Keep the old 3.18 recovery permissive for root networking. Android's
+  # legacy paranoid network gate otherwise blocks capabilities by Android GID.
+  "${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --disable ANDROID_PARANOID_NETWORK
+
+  # Namespace/cgroup/filesystem pieces used by DroidSpaces on legacy cgroup v1.
+  for symbol in \
+    SYSVIPC POSIX_MQUEUE NAMESPACES UTS_NS IPC_NS USER_NS PID_NS NET_NS \
+    CGROUPS CGROUP_FREEZER CGROUP_DEVICE MEMCG CGROUP_SCHED FAIR_GROUP_SCHED \
+    CPUSETS CGROUP_CPUACCT DEVTMPFS VETH OVERLAY_FS
+  do
+    "${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --enable "$symbol"
+  done
+
+  # Recovery networking/NAT must be built-in. There is no assumption that a
+  # matching module tree is available beside TWRP.
+  for symbol in \
+    BRIDGE BRIDGE_NETFILTER NETFILTER NETFILTER_ADVANCED NETFILTER_XTABLES \
+    NF_CONNTRACK NF_CONNTRACK_IPV4 NF_NAT NF_NAT_IPV4 NF_NAT_MASQUERADE_IPV4 \
+    NETFILTER_XT_NAT NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_TARGET_TCPMSS \
+    IP_NF_IPTABLES IP_NF_FILTER IP_NF_MANGLE IP_NF_NAT IP_NF_TARGET_MASQUERADE \
+    IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES \
+    IP_SET IP_SET_HASH_IP IP_SET_HASH_NET NETFILTER_XT_SET NETFILTER_XT_MATCH_RECENT
+  do
+    "${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --enable "$symbol"
+  done
+fi
+
 make "${MAKE_ARGS[@]}" olddefconfig
 
-diff -u \
-  <(grep -vE '^(# )?CONFIG_(RD_LZMA|DECOMPRESS_LZMA)([= ]|$)' "$CONFIG_BEFORE_OVERRIDES") \
-  <(grep -vE '^(# )?CONFIG_(RD_LZMA|DECOMPRESS_LZMA)([= ]|$)' "$KERNEL_CONFIG") \
-  || die "an unexpected kernel configuration changed"
+if [[ "${ALBUS_RECOVERY_NETWORK_FLAGS:-0}" != "1" ]]; then
+  diff -u \
+    <(grep -vE '^(# )?CONFIG_(RD_LZMA|DECOMPRESS_LZMA)([= ]|$)' "$CONFIG_BEFORE_OVERRIDES") \
+    <(grep -vE '^(# )?CONFIG_(RD_LZMA|DECOMPRESS_LZMA)([= ]|$)' "$KERNEL_CONFIG") \
+    || die "an unexpected kernel configuration changed"
+else
+  for expected in \
+    '# CONFIG_ANDROID_PARANOID_NETWORK is not set' \
+    'CONFIG_SYSVIPC=y' 'CONFIG_POSIX_MQUEUE=y' \
+    'CONFIG_NAMESPACES=y' 'CONFIG_UTS_NS=y' 'CONFIG_IPC_NS=y' \
+    'CONFIG_USER_NS=y' 'CONFIG_PID_NS=y' 'CONFIG_NET_NS=y' \
+    'CONFIG_CGROUPS=y' 'CONFIG_CGROUP_FREEZER=y' 'CONFIG_CGROUP_DEVICE=y' \
+    'CONFIG_MEMCG=y' 'CONFIG_CGROUP_SCHED=y' 'CONFIG_FAIR_GROUP_SCHED=y' \
+    'CONFIG_CPUSETS=y' 'CONFIG_CGROUP_CPUACCT=y' \
+    'CONFIG_DEVTMPFS=y' 'CONFIG_VETH=y' 'CONFIG_OVERLAY_FS=y' \
+    'CONFIG_BRIDGE=y' 'CONFIG_BRIDGE_NETFILTER=y' \
+    'CONFIG_NETFILTER=y' 'CONFIG_NETFILTER_ADVANCED=y' 'CONFIG_NETFILTER_XTABLES=y' \
+    'CONFIG_NF_CONNTRACK=y' 'CONFIG_NF_CONNTRACK_IPV4=y' \
+    'CONFIG_NF_NAT=y' 'CONFIG_NF_NAT_IPV4=y' 'CONFIG_NF_NAT_MASQUERADE_IPV4=y' \
+    'CONFIG_NETFILTER_XT_NAT=y' 'CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y' \
+    'CONFIG_NETFILTER_XT_TARGET_TCPMSS=y' \
+    'CONFIG_IP_NF_IPTABLES=y' 'CONFIG_IP_NF_FILTER=y' 'CONFIG_IP_NF_MANGLE=y' \
+    'CONFIG_IP_NF_NAT=y' 'CONFIG_IP_NF_TARGET_MASQUERADE=y' \
+    'CONFIG_IP_ADVANCED_ROUTER=y' 'CONFIG_IP_MULTIPLE_TABLES=y' \
+    'CONFIG_IP_SET=y' 'CONFIG_IP_SET_HASH_IP=y' 'CONFIG_IP_SET_HASH_NET=y' \
+    'CONFIG_NETFILTER_XT_SET=y' 'CONFIG_NETFILTER_XT_MATCH_RECENT=y'
+  do
+    require_config "$expected"
+  done
+
+  # This msm8996 3.18 tree does not contain the pids cgroup controller Kconfig
+  # at the pinned source revision. Do not pretend CONFIG_CGROUP_PIDS was
+  # enabled: a real backport is required before it can be gated here.
+  if grep -Rqs '^[[:space:]]*config[[:space:]]\+CGROUP_PIDS' "$KERNEL_DIR"; then
+    "${KERNEL_DIR}/scripts/config" --file "$KERNEL_CONFIG" --enable CGROUP_PIDS
+    make "${MAKE_ARGS[@]}" olddefconfig
+    require_config 'CONFIG_CGROUP_PIDS=y'
+  else
+    echo "NOTE: CONFIG_CGROUP_PIDS is unavailable in the pinned 3.18 source; not faking it."
+  fi
+fi
 
 if grep -Eq '^(# )?CONFIG_KSU([_= ]|$)' "$KERNEL_CONFIG"; then
   die "KernelSU configuration symbols unexpectedly exist"
