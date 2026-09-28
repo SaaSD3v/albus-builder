@@ -2,9 +2,6 @@ name: Build recovery (Albus Wi-Fi Client)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - recovery-wifi-clean
 
 permissions:
   contents: read
