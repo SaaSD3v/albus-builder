@@ -76,8 +76,8 @@ popd >/dev/null
 echo "==> hostapd"
 cp "$ROOT/recovery-wifi/hostapd.config" "$SRC/wpa/hostapd/.config"
 cat >> "$SRC/wpa/hostapd/.config" <<EOF
-CFLAGS += -Os -ffunction-sections -fdata-sections -I$PREFIX/include/libnl3
-LIBS += -L$PREFIX/lib
+CFLAGS += -Os -ffunction-sections -fdata-sections -I$PREFIX/include/libnl3 -I$SRC/openssl/include
+LIBS += -L$PREFIX/lib -L$SRC/openssl
 EOF
 
 pushd "$SRC/wpa/hostapd" >/dev/null
