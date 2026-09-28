@@ -94,6 +94,32 @@ jobs:
           "$QEMU" "$SMOKE/iptables" -t nat -j DNAT -h >/dev/null
           "$QEMU" "$SMOKE/iptables" -t nat -j MASQUERADE -h >/dev/null
 
+      - name: Validate Albus hotspot payload
+        run: |
+          set -euo pipefail
+          grep -qx 'CONFIG_UDHCPD=y' recovery-wifi/out/busybox.config
+          grep -q 'wifi_hotspot=transient-ap0-vif-hardware-validation' artifacts/build-info.txt
+          grep -q 'wifi_hotspot_nat=not-enabled-yet' artifacts/build-info.txt
+
+          for bin in hostapd.albus iw.albus; do
+            test -x "recovery-wifi/out/$bin"
+            file "recovery-wifi/out/$bin" | tee "$bin-file.txt"
+            grep -q 'ARM aarch64' "$bin-file.txt"
+            grep -q 'statically linked' "$bin-file.txt"
+          done
+
+          aarch64-linux-gnu-strings recovery-wifi/out/hostapd.albus | grep -Fq 'nl80211'
+          QEMU="$(command -v qemu-aarch64-static)"
+          test -x "$QEMU"
+
+          "$QEMU" recovery-wifi/out/hostapd.albus -v > hostapd-version.txt 2>&1 || true
+          cat hostapd-version.txt
+          grep -Eq 'hostapd v2\.9' hostapd-version.txt
+
+          "$QEMU" recovery-wifi/out/iw.albus --version > iw-version.txt 2>&1 || true
+          cat iw-version.txt
+          grep -Eq 'iw version 5\.9' iw-version.txt
+
       - name: Upload to GoFile
         run: |
           SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
