@@ -1253,15 +1253,18 @@ cmd_hotspot_start_vif() {
     fi
 
     if [ "$sta_state" = COMPLETED ]; then
-        sta_channel=$(current_sta_channel 2>/dev/null || true)
-        if [ -z "$sta_channel" ]; then
-            echo "STA is connected outside supported 2.4 GHz channels 1-11."
+        if ! load_sta_radio_info; then
+            echo "Could not map the current STA frequency to a supported AP channel."
             return 1
         fi
-        if [ "$requested_channel" != "$sta_channel" ]; then
-            echo "PRONTO STA+AP is single-channel; forcing AP channel $sta_channel."
+        if [ "$requested_channel" != "$STA_CHANNEL" ]; then
+            case "$STA_BAND" in
+                2g) sta_band_label='2.4 GHz' ;;
+                5g) sta_band_label='5 GHz' ;;
+            esac
+            echo "PRONTO STA+AP is single-channel; forcing AP to $sta_band_label channel $STA_CHANNEL."
         fi
-        channel=$sta_channel
+        channel=$STA_CHANNEL
     fi
 
     make_hotspot_conf "$HOTSPOT_REQUEST_SSID" "$HOTSPOT_REQUEST_PASS" "$channel" "$HOTSPOT_CONF" || return 1
