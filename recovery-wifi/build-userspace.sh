@@ -115,190 +115,17 @@ git -C "$SRC/busybox" checkout --detach FETCH_HEAD
 pushd "$SRC/busybox" >/dev/null
 make ARCH=arm64 CROSS_COMPILE="$CROSS" defconfig
 
-if grep -q '^# CONFIG_UDHCPD is not setsed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' .config
-sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' .config || true
-make ARCH=arm64 CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
-make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE="$CROSS"
-
-for symbol in \
-  CONFIG_UDHCPC CONFIG_UDHCPD CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
-  CONFIG_TAIL CONFIG_PKILL CONFIG_SLEEP CONFIG_CAT CONFIG_CHMOD CONFIG_MKDIR CONFIG_AWK \
-  CONFIG_RM CONFIG_READLINK CONFIG_SHA256SUM CONFIG_CP CONFIG_MV CONFIG_CHOWN CONFIG_SYNC
-do
-  grep -qx "$symbol=y" .config || {
-    echo "Missing required BusyBox setting: $symbol=y" >&2
-    exit 1
-  }
-done
-
-cp busybox "$OUT/busybox.albus"
-cp .config "$OUT/busybox.config"
-popd >/dev/null
-
-echo "==> static legacy iptables for DroidSpaces"
-# Same recovery-side fix proven on Channel: explicit DroidSpaces port forwards
-# call iptables(8), iptables-save and iptables-restore. Build the legacy
-# multi-call binary statically so recovery does not depend on Android /system.
-git init "$SRC/iptables"
-git -C "$SRC/iptables" remote add origin https://github.com/PKRoma/iptables.git
-git -C "$SRC/iptables" fetch --depth=1 origin "$IPTABLES_COMMIT"
-git -C "$SRC/iptables" checkout --detach FETCH_HEAD
-pushd "$SRC/iptables" >/dev/null
-./autogen.sh
-PKG_CONFIG_LIBDIR=/nonexistent ./configure \
-  --host=aarch64-linux-gnu \
-  --prefix="$PREFIX/iptables" \
-  --disable-shared \
-  --enable-static \
-  --disable-nftables \
-  --disable-ipv6 \
-  --disable-devel \
-  --disable-libipq \
-  --disable-bpf-compiler \
-  --disable-nfsynproxy \
-  --disable-connlabel \
-  --with-xt-lock-name=/tmp/xtables.lock \
-  CC="$CC" \
-  CFLAGS='-Os -ffunction-sections -fdata-sections' \
-  LDFLAGS='-Wl,--gc-sections'
-# libtool treats -static as library selection and can still emit a dynamic PIE.
-# Channel's validated recovery build uses -all-static at the program link step.
-make -j"$(nproc)" LDFLAGS='-all-static -Wl,--gc-sections'
-cp iptables/xtables-multi "$OUT/iptables.albus"
-popd >/dev/null
-
-echo "==> static Albus WCNSS helper"
-"$CC" -static -Os -ffunction-sections -fdata-sections \
-  -Wl,--gc-sections \
-  "$ROOT/recovery-wifi/wcnss-recovery-albus.c" \
-  -o "$OUT/wcnss-recovery-albus"
-
-cp "$ROOT/recovery-wifi/wifi-udhcpc.script" "$OUT/wifi-udhcpc.script"
-
-chmod 0755 \
-  "$OUT/wpa_supplicant.albus" \
-  "$OUT/wpa_cli.albus" \
-  "$OUT/busybox.albus" \
-  "$OUT/hostapd.albus" \
-  "$OUT/iw.albus" \
-  "$OUT/iptables.albus" \
-  "$OUT/wcnss-recovery-albus" \
-  "$OUT/wifi-udhcpc.script"
-
-for f in \
-  "$OUT/wpa_supplicant.albus" \
-  "$OUT/wpa_cli.albus" \
-  "$OUT/busybox.albus" \
-  "$OUT/hostapd.albus" \
-  "$OUT/iw.albus" \
-  "$OUT/iptables.albus" \
-  "$OUT/wcnss-recovery-albus"
-do
-  "$STRIP" --strip-all "$f"
-  file "$f"
-  file "$f" | grep -q 'statically linked'
-done
-
-sha256sum "$OUT"/* | tee "$OUT/SHA256SUMS"
-du -h "$OUT"/*
- .config; then
-  sed -i 's/^# CONFIG_UDHCPD is not set$/CONFIG_UDHCPD=y/' .config
-elif ! grep -q '^CONFIG_UDHCPD=ysed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' .config
-sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' .config || true
-make ARCH=arm64 CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
-make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE="$CROSS"
-
-for symbol in \
-  CONFIG_UDHCPC CONFIG_UDHCPD CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
-  CONFIG_TAIL CONFIG_PKILL CONFIG_SLEEP CONFIG_CAT CONFIG_CHMOD CONFIG_MKDIR CONFIG_AWK \
-  CONFIG_RM CONFIG_READLINK
-do
-  grep -qx "$symbol=y" .config || {
-    echo "Missing required BusyBox setting: $symbol=y" >&2
-    exit 1
-  }
-done
-
-cp busybox "$OUT/busybox.albus"
-cp .config "$OUT/busybox.config"
-popd >/dev/null
-
-echo "==> static legacy iptables for DroidSpaces"
-# Same recovery-side fix proven on Channel: explicit DroidSpaces port forwards
-# call iptables(8), iptables-save and iptables-restore. Build the legacy
-# multi-call binary statically so recovery does not depend on Android /system.
-git init "$SRC/iptables"
-git -C "$SRC/iptables" remote add origin https://github.com/PKRoma/iptables.git
-git -C "$SRC/iptables" fetch --depth=1 origin "$IPTABLES_COMMIT"
-git -C "$SRC/iptables" checkout --detach FETCH_HEAD
-pushd "$SRC/iptables" >/dev/null
-./autogen.sh
-PKG_CONFIG_LIBDIR=/nonexistent ./configure \
-  --host=aarch64-linux-gnu \
-  --prefix="$PREFIX/iptables" \
-  --disable-shared \
-  --enable-static \
-  --disable-nftables \
-  --disable-ipv6 \
-  --disable-devel \
-  --disable-libipq \
-  --disable-bpf-compiler \
-  --disable-nfsynproxy \
-  --disable-connlabel \
-  --with-xt-lock-name=/tmp/xtables.lock \
-  CC="$CC" \
-  CFLAGS='-Os -ffunction-sections -fdata-sections' \
-  LDFLAGS='-Wl,--gc-sections'
-# libtool treats -static as library selection and can still emit a dynamic PIE.
-# Channel's validated recovery build uses -all-static at the program link step.
-make -j"$(nproc)" LDFLAGS='-all-static -Wl,--gc-sections'
-cp iptables/xtables-multi "$OUT/iptables.albus"
-popd >/dev/null
-
-echo "==> static Albus WCNSS helper"
-"$CC" -static -Os -ffunction-sections -fdata-sections \
-  -Wl,--gc-sections \
-  "$ROOT/recovery-wifi/wcnss-recovery-albus.c" \
-  -o "$OUT/wcnss-recovery-albus"
-
-cp "$ROOT/recovery-wifi/wifi-udhcpc.script" "$OUT/wifi-udhcpc.script"
-
-chmod 0755 \
-  "$OUT/wpa_supplicant.albus" \
-  "$OUT/wpa_cli.albus" \
-  "$OUT/busybox.albus" \
-  "$OUT/hostapd.albus" \
-  "$OUT/iw.albus" \
-  "$OUT/iptables.albus" \
-  "$OUT/wcnss-recovery-albus" \
-  "$OUT/wifi-udhcpc.script"
-
-for f in \
-  "$OUT/wpa_supplicant.albus" \
-  "$OUT/wpa_cli.albus" \
-  "$OUT/busybox.albus" \
-  "$OUT/hostapd.albus" \
-  "$OUT/iw.albus" \
-  "$OUT/iptables.albus" \
-  "$OUT/wcnss-recovery-albus"
-do
-  "$STRIP" --strip-all "$f"
-  file "$f"
-  file "$f" | grep -q 'statically linked'
-done
-
-sha256sum "$OUT"/* | tee "$OUT/SHA256SUMS"
-du -h "$OUT"/*
- .config; then
-  echo 'CONFIG_UDHCPD=y' >> .config
-fi
-
-for symbol in SHA256SUM CP MV CHOWN SYNC; do
+enable_busybox_symbol() {
+  local symbol="$1"
   if grep -q "^# CONFIG_${symbol} is not set$" .config; then
     sed -i "s/^# CONFIG_${symbol} is not set$/CONFIG_${symbol}=y/" .config
   elif ! grep -q "^CONFIG_${symbol}=y$" .config; then
     echo "CONFIG_${symbol}=y" >> .config
   fi
+}
+
+for symbol in UDHCPD SHA256SUM CP MV CHOWN SYNC; do
+  enable_busybox_symbol "$symbol"
 done
 
 sed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' .config
@@ -309,7 +136,7 @@ make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE="$CROSS"
 for symbol in \
   CONFIG_UDHCPC CONFIG_UDHCPD CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
   CONFIG_TAIL CONFIG_PKILL CONFIG_SLEEP CONFIG_CAT CONFIG_CHMOD CONFIG_MKDIR CONFIG_AWK \
-  CONFIG_RM CONFIG_READLINK
+  CONFIG_RM CONFIG_READLINK CONFIG_SHA256SUM CONFIG_CP CONFIG_MV CONFIG_CHOWN CONFIG_SYNC
 do
   grep -qx "$symbol=y" .config || {
     echo "Missing required BusyBox setting: $symbol=y" >&2
