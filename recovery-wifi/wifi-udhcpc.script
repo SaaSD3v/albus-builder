@@ -1,9 +1,18 @@
 #!/sbin/sh
+TMPDIR=/tmp
+TMP=/tmp
+TEMP=/tmp
+export TMPDIR TMP TEMP
+
+BB=/sbin/busybox.albus
 STATE=/tmp/albus-wifi
+"$BB" mkdir -p "$STATE" 2>/dev/null || true
 
 case "$1" in
   deconfig)
-    ip addr flush dev "$interface" 2>/dev/null || true
+    "$BB" ip addr flush dev "$interface" 2>/dev/null || true
+    : > /etc/resolv.conf 2>/dev/null || true
+    "$BB" rm -f "$STATE/lease.env" "$STATE/udhcpc.pid" 2>/dev/null || true
     if command -v setprop >/dev/null 2>&1; then
       setprop "dhcp.$interface.ipaddress" ""
       setprop "dhcp.$interface.gateway" ""
@@ -15,14 +24,14 @@ case "$1" in
     ;;
   bound|renew)
     if [ -n "${subnet:-}" ]; then
-      ifconfig "$interface" "$ip" netmask "$subnet" up
+      "$BB" ifconfig "$interface" "$ip" netmask "$subnet" up
     else
-      ifconfig "$interface" "$ip" up
+      "$BB" ifconfig "$interface" "$ip" up
     fi
 
-    ip route del default dev "$interface" 2>/dev/null || true
+    "$BB" ip route del default dev "$interface" 2>/dev/null || true
     set -- ${router:-}
-    [ -n "${1:-}" ] && ip route add default via "$1" dev "$interface" 2>/dev/null || true
+    [ -n "${1:-}" ] && "$BB" ip route add default via "$1" dev "$interface" 2>/dev/null || true
 
     : > /etc/resolv.conf 2>/dev/null || true
     for server in ${dns:-}; do
