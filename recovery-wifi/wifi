@@ -105,9 +105,14 @@ require_payload() {
 
 require_hotspot_payload() {
     require_payload
-    for f in "$HOSTAPD" "$IW" "$IPTABLES"; do
+    for f in "$HOSTAPD" "$IW"; do
         [ -x "$f" ] || die "missing recovery hotspot payload: $f"
     done
+}
+
+require_repeater_payload() {
+    require_hotspot_payload
+    [ -x "$IPTABLES" ] || die "missing recovery repeater payload: $IPTABLES"
 }
 
 mount_ro() {
@@ -675,6 +680,13 @@ hotspot_active_iface() {
                     return 0
                 }
                 ;;
+            repeater:*)
+                active=${active#repeater:}
+                [ -n "$active" ] && {
+                    printf '%s\n' "$active"
+                    return 0
+                }
+                ;;
         esac
     fi
     printf '%s\n' "$HOTSPOT_IFACE"
@@ -828,6 +840,89 @@ cmd_hotspot_start_vif() {
             "$BB" sed -n 's/^wpa_state=//p')
     fi
 
+    if [ "$sta_state" = COMPLETED ]; then
+        sta_channel=$(current_sta_channel 2>/dev/null || true)
+        if [ -z "$sta_channel" ]; then
+            echo "STA is connected outside supported 2.4 GHz channels 1-11."
+            return 1
+        fi
+        if [ "$requested_channel" != "$sta_channel" ]; then
+            echo "PRONTO STA+AP is single-channel; forcing AP channel $sta_channel."
+        fi
+        channel=$sta_channel
+    fi
+
+    make_hotspot_conf "$1" "$2" "$channel" || return 1
+
+    if ! create_hotspot_vif; then
+        echo "Could not create AP VIF $HOTSPOT_IFACE."
+        dmesg 2>/dev/null |
+            "$BB" grep -iE 'wlan|cfg80211|softap|concurr|adapter' |
+            "$BB" tail -n 100 || true
+        return 1
+    fi
+
+    if ! start_hostapd_vif; then
+        echo "Could not start hostapd on $HOTSPOT_IFACE."
+        cleanup_hotspot_failure
+        return 1
+    fi
+
+    if ! wait_hotspot_ready; then
+        echo "hostapd never reached AP-ENABLED on $HOTSPOT_IFACE."
+        cleanup_hotspot_failure
+        return 1
+    fi
+
+    "$BB" ip addr flush dev "$HOTSPOT_IFACE" 2>/dev/null || true
+    "$BB" ip addr add "$HOTSPOT_CIDR" dev "$HOTSPOT_IFACE" || {
+        echo "Could not assign $HOTSPOT_CIDR to $HOTSPOT_IFACE."
+        cleanup_hotspot_failure
+        return 1
+    }
+    "$BB" ip link set "$HOTSPOT_IFACE" up 2>/dev/null || true
+
+    if ! start_udhcpd; then
+        echo "AP is enabled but DHCP failed."
+        cleanup_hotspot_failure
+        return 1
+    fi
+
+    printf 'vif:%s\n' "$HOTSPOT_IFACE" > "$HOTSPOT_MARKER"
+    "$BB" chmod 600 "$HOTSPOT_MARKER" 2>/dev/null || true
+
+    echo "Hotspot ready on $HOTSPOT_IFACE: $HOTSPOT_ADDR/24 (channel $channel)."
+    [ "$sta_state" = COMPLETED ] &&
+        echo "$IFACE STA remained connected; AP+STA concurrency is active."
+    echo "Internet sharing/NAT is disabled in start-vif mode."
+    cmd_hotspot_status
+}
+
+cmd_hotspot_repeater() {
+    case "$#" in
+        2|3) ;;
+        *)
+            echo 'usage: wifi hotspot repeater "SSID" "PASSWORD" [CHANNEL]'
+            return 2
+            ;;
+    esac
+
+    require_repeater_payload
+    [ ! -f "$HOTSPOT_MARKER" ] || {
+        echo "A hotspot is already active. Stop it first: wifi hotspot stop"
+        return 1
+    }
+
+    prepare || return 1
+
+    requested_channel=${3:-6}
+    channel=$requested_channel
+    sta_state=""
+    if [ -S "$CTRL/$IFACE" ]; then
+        sta_state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+            "$BB" sed -n 's/^wpa_state=//p')
+    fi
+
     if [ "$sta_state" != COMPLETED ]; then
         echo "Repeater mode requires $IFACE to be connected to an upstream Wi-Fi network first."
         echo 'Connect first with: wifi connect "SSID" "PASSWORD"'
@@ -888,12 +983,12 @@ cmd_hotspot_start_vif() {
         return 1
     fi
 
-    printf 'vif:%s\n' "$HOTSPOT_IFACE" > "$HOTSPOT_MARKER"
+    printf 'repeater:%s\n' "$HOTSPOT_IFACE" > "$HOTSPOT_MARKER"
     "$BB" chmod 600 "$HOTSPOT_MARKER" 2>/dev/null || true
 
-    echo "Hotspot ready on $HOTSPOT_IFACE: $HOTSPOT_ADDR/24 (channel $channel)."
-    echo "$IFACE STA remained connected; AP+STA concurrency is active."
-    echo "Internet sharing: $HOTSPOT_IFACE -> $IFACE via IPv4 NAT/MASQUERADE."
+    echo "Wi-Fi repeater ready: $HOTSPOT_IFACE -> $IFACE."
+    echo "Hotspot: $HOTSPOT_ADDR/24 (channel $channel)."
+    echo "Internet sharing: IPv4 forwarding + MASQUERADE enabled."
     cmd_hotspot_status
 }
 
@@ -904,6 +999,12 @@ cmd_hotspot_status() {
     }
 
     echo "--- hotspot ---"
+    hotspot_mode=$(cat "$HOTSPOT_MARKER" 2>/dev/null || true)
+    case "$hotspot_mode" in
+        repeater:*) echo "mode: repeater (AP+STA+NAT)" ;;
+        vif:*) echo "mode: VIF concurrency (AP+STA, no NAT)" ;;
+        *) echo "mode: unknown" ;;
+    esac
     echo "interface: $(hotspot_active_iface)"
     pid=""
     [ -f "$HOTSPOT_HOSTAPD_PID" ] &&
@@ -1168,7 +1269,7 @@ cmd_logs() {
 cmd_test() {
     echo "Albus recovery Wi-Fi validation"
 
-    for f in "$BB" "$WPA" "$WPACLI" "$HOSTAPD" "$IW" "$WCNSS" "$UDHCPC_SCRIPT"; do
+    for f in "$BB" "$WPA" "$WPACLI" "$HOSTAPD" "$IW" "$IPTABLES" "$WCNSS" "$UDHCPC_SCRIPT"; do
         [ -x "$f" ] && echo "OK   $f" || echo "MISS $f"
     done
 
@@ -1199,7 +1300,8 @@ Recovery Wi-Fi (Motorola albus)
   wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE
   wifi connect-open "SSID"
   wifi hotspot probe-vif
-  wifi hotspot start-vif "SSID" "PASSWORD" [CHANNEL]  # AP+STA repeater with internet/NAT
+  wifi hotspot start-vif "SSID" "PASSWORD" [CHANNEL]  # AP+STA concurrency, no NAT
+  wifi hotspot repeater "SSID" "PASSWORD" [CHANNEL]   # AP+STA with internet/NAT
   wifi hotspot status
   wifi hotspot clients
   wifi hotspot stop
@@ -1232,6 +1334,7 @@ case "$cmd" in
         case "$sub" in
             probe-vif) cmd_hotspot_probe_vif ;;
             start-vif) cmd_hotspot_start_vif "$@" ;;
+            repeater) cmd_hotspot_repeater "$@" ;;
             status) cmd_hotspot_status ;;
             clients) cmd_hotspot_clients ;;
             stop) cmd_hotspot_stop ;;
