@@ -666,24 +666,53 @@ create_hotspot_vif() {
     }
 }
 
-current_sta_channel() {
+hotspot_channel_band() {
+    channel=$1
+    case "$channel" in
+        1|2|3|4|5|6|7|8|9|10|11|12|13)
+            HOTSPOT_BAND=2g
+            HOTSPOT_HW_MODE=g
+            return 0
+            ;;
+        36|40|44|48|52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144|149|153|157|161|165)
+            HOTSPOT_BAND=5g
+            HOTSPOT_HW_MODE=a
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+load_sta_radio_info() {
     [ -S "$CTRL/$IFACE" ] || return 1
-    state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
-        "$BB" sed -n 's/^wpa_state=//p')
+    sta_status=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null)
+    state=$(printf '%s\n' "$sta_status" | "$BB" sed -n 's/^wpa_state=//p')
     [ "$state" = COMPLETED ] || return 1
 
-    freq=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
-        "$BB" sed -n 's/^freq=//p')
-    case "$freq" in
+    STA_FREQ=$(printf '%s\n' "$sta_status" | "$BB" sed -n 's/^freq=//p')
+    case "$STA_FREQ" in
         ''|*[!0-9]*) return 1 ;;
     esac
 
-    if [ "$freq" -ge 2412 ] && [ "$freq" -le 2462 ]; then
-        channel=$(( (freq - 2407) / 5 ))
-        [ "$channel" -ge 1 ] && [ "$channel" -le 11 ] || return 1
-        printf '%s\n' "$channel"
+    if [ "$STA_FREQ" -ge 2412 ] && [ "$STA_FREQ" -le 2472 ]; then
+        STA_CHANNEL=$(( (STA_FREQ - 2407) / 5 ))
+        [ "$STA_CHANNEL" -ge 1 ] && [ "$STA_CHANNEL" -le 13 ] || return 1
+        STA_BAND=2g
+        STA_HW_MODE=g
         return 0
     fi
+
+    if [ "$STA_FREQ" -ge 5180 ] && [ "$STA_FREQ" -le 5825 ]; then
+        STA_CHANNEL=$(( (STA_FREQ - 5000) / 5 ))
+        hotspot_channel_band "$STA_CHANNEL" || return 1
+        [ "$HOTSPOT_BAND" = 5g ] || return 1
+        STA_BAND=5g
+        STA_HW_MODE=a
+        return 0
+    fi
+
     return 1
 }
 
