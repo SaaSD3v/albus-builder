@@ -70,7 +70,8 @@ jobs:
             CPUSETS CGROUP_CPUACCT DEVTMPFS VETH OVERLAY_FS \
             BRIDGE BRIDGE_NETFILTER NETFILTER NETFILTER_ADVANCED NETFILTER_XTABLES \
             NF_CONNTRACK NF_CONNTRACK_IPV4 NF_NAT NF_NAT_IPV4 NF_NAT_MASQUERADE_IPV4 \
-            NETFILTER_XT_NAT NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_TARGET_TCPMSS \
+            NETFILTER_XT_NAT NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_STATE \
+            NETFILTER_XT_TARGET_TCPMSS \
             IP_NF_IPTABLES IP_NF_FILTER IP_NF_MANGLE IP_NF_NAT IP_NF_TARGET_MASQUERADE \
             IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES \
             IP_SET IP_SET_HASH_IP IP_SET_HASH_NET NETFILTER_XT_SET NETFILTER_XT_MATCH_RECENT
@@ -121,7 +122,7 @@ jobs:
           grep -q 'droidspaces_iptables=legacy-static-multicall-with-iptables-save-restore-aliases' artifacts/build-info.txt
 
           aarch64-linux-gnu-strings recovery-wifi/out/iptables.albus > iptables-strings.txt
-          for token in iptables iptables-save iptables-restore DNAT MASQUERADE addrtype; do
+          for token in iptables iptables-save iptables-restore DNAT MASQUERADE addrtype state; do
             grep -Fq "$token" iptables-strings.txt
           done
 
@@ -138,6 +139,7 @@ jobs:
           grep -Eq '^iptables v1\.6\.2' iptables-version.txt
           "$QEMU" "$SMOKE/iptables-restore" --version | grep -Eq '^iptables-restore v1\.6\.2'
           "$QEMU" "$SMOKE/iptables" -m addrtype -h >/dev/null
+          "$QEMU" "$SMOKE/iptables" -m state -h >/dev/null
           "$QEMU" "$SMOKE/iptables" -t nat -j DNAT -h >/dev/null
           "$QEMU" "$SMOKE/iptables" -t nat -j MASQUERADE -h >/dev/null
 
@@ -145,8 +147,14 @@ jobs:
         run: |
           set -euo pipefail
           grep -qx 'CONFIG_UDHCPD=y' recovery-wifi/out/busybox.config
-          grep -q 'wifi_hotspot=transient-ap0-vif-hardware-validation' artifacts/build-info.txt
+          grep -q 'wifi_hotspot=ap0-vif-repeater-with-ipv4-nat' artifacts/build-info.txt
+          grep -q 'wifi_hotspot_nat=ap0-to-wlan0-masquerade-with-private-chains' artifacts/build-info.txt
           grep -q 'wifi_hotspot_persistence=tmpfs-only' artifacts/build-info.txt
+
+          grep -Fq 'ALBUS_HOTSPOT_FWD' recovery-wifi/wifi
+          grep -Fq 'ALBUS_HOTSPOT_NAT' recovery-wifi/wifi
+          grep -Fq 'MASQUERADE' recovery-wifi/wifi
+          grep -Fq '/proc/sys/net/ipv4/ip_forward' recovery-wifi/wifi
 
           for bin in hostapd.albus iw.albus; do
             test -x "recovery-wifi/out/$bin"
