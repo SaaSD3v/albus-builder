@@ -92,7 +92,7 @@ require_root() {
 }
 
 require_payload() {
-    for f in "$BB" "$WPA" "$WPACLI" "$HOSTAPD" "$IW" "$WCNSS" "$UDHCPC_SCRIPT"; do
+    for f in "$BB" "$WPA" "$WPACLI" "$WCNSS" "$UDHCPC_SCRIPT"; do
         [ -x "$f" ] || die "missing recovery Wi-Fi payload: $f"
     done
 }
