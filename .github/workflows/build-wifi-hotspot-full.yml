@@ -167,6 +167,11 @@ jobs:
           grep -Fq 'cmd_forget()' recovery-wifi/wifi
           grep -Fq 'cmd_hotspot_create()' recovery-wifi/wifi
           grep -Fq 'cmd_hotspot_config()' recovery-wifi/wifi
+          grep -qx 'IPTABLES=/sbin/iptables' recovery-wifi/wifi
+          if grep -qx 'IPTABLES=/sbin/iptables.albus' recovery-wifi/wifi; then
+            echo "Runtime must invoke xtables-multi through the /sbin/iptables alias"
+            exit 1
+          fi
           grep -Fq 'cmd_hotspot_repeater()' recovery-wifi/wifi
           grep -Fq 'repeater:*) echo "mode: repeater (AP+STA+NAT)"' recovery-wifi/wifi
           grep -Fq 'Internet sharing/NAT is disabled in start-vif mode.' recovery-wifi/wifi
