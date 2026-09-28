@@ -20,7 +20,8 @@ IW=/sbin/iw.albus
 IPTABLES=/sbin/iptables
 WCNSS=/sbin/wcnss-recovery-albus
 UDHCPC_SCRIPT=/sbin/wifi-udhcpc.script
-TIME_SYNC=/sbin/recovery-time-sync-albus
+TIME_SYNC=/sbin/recovery-time-sync
+RCTOOLS=/sbin/rctools
 
 STATE=/tmp/albus-wifi
 MNT=$STATE/mnt
@@ -132,10 +133,9 @@ data_partition_mounted() {
 
 ensure_persistent_store() {
     if ! data_partition_mounted; then
-        twrp_bin=$(command -v twrp 2>/dev/null || true)
-        if [ -n "$twrp_bin" ]; then
-            log "persistence: /data is not mounted; trying TWRP mount for at most ${DATA_MOUNT_TIMEOUT}s"
-            "$BB" timeout "$DATA_MOUNT_TIMEOUT" "$twrp_bin" mount data >/dev/null 2>&1 || true
+        if [ -x "$RCTOOLS" ]; then
+            log "persistence: /data is not mounted; trying RCTools direct mount for at most ${DATA_MOUNT_TIMEOUT}s"
+            "$BB" timeout "$DATA_MOUNT_TIMEOUT" "$RCTOOLS" mount data rw >/dev/null 2>&1 || true
         fi
     fi
 
