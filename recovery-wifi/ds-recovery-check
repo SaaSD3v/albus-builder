@@ -1,0 +1,72 @@
+#!/sbin/sh
+# Albus recovery-side DroidSpaces capability preflight.
+# Same public command used by Channel. Read-only: no firewall mutation.
+
+PATH=/sbin:/system/bin:/vendor/bin
+export PATH
+BB=/sbin/busybox.albus
+IPT=/sbin/iptables
+FAIL=0
+WARN=0
+
+ok(){ printf '[OK]   %s\n' "$*"; }
+bad(){ printf '[FAIL] %s\n' "$*"; FAIL=$((FAIL+1)); }
+warn(){ printf '[WARN] %s\n' "$*"; WARN=$((WARN+1)); }
+check_file(){ [ -e "$1" ] && ok "$1" || bad "$1 ausente"; }
+check_cmd(){ label="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$label"; else bad "$label"; fi; }
+
+printf 'DroidSpaces recovery requirements\n'
+printf '%s\n' '--------------------------------'
+
+for f in /proc/self/ns/mnt /proc/self/ns/pid /proc/self/ns/uts /proc/self/ns/ipc /proc/self/ns/net /proc/sys/net/ipv4/ip_forward; do
+  check_file "$f"
+done
+
+[ -x /sbin/iptables.albus ] && ok 'iptables legacy static binary' || bad '/sbin/iptables.albus ausente'
+[ -e /sbin/iptables ] && ok 'iptables frontend' || bad '/sbin/iptables ausente'
+[ -e /sbin/iptables-save ] && ok 'iptables-save frontend' || bad '/sbin/iptables-save ausente'
+[ -e /sbin/iptables-restore ] && ok 'iptables-restore frontend' || bad '/sbin/iptables-restore ausente'
+
+if [ -x "$IPT" ]; then
+  ver=$("$IPT" --version 2>&1 | "$BB" head -n1)
+  [ -n "$ver" ] && printf '[INFO] %s\n' "$ver"
+  check_cmd 'iptables filter table' "$IPT" -t filter -L -n
+  check_cmd 'iptables nat table' "$IPT" -t nat -L -n
+  check_cmd 'iptables mangle table' "$IPT" -t mangle -L -n
+  check_cmd 'xtables addrtype match' "$IPT" -m addrtype -h
+  check_cmd 'xtables state match' "$IPT" -m state -h
+  check_cmd 'xtables DNAT target' "$IPT" -t nat -j DNAT -h
+  check_cmd 'xtables MASQUERADE target' "$IPT" -t nat -j MASQUERADE -h
+  check_cmd 'xtables TCPMSS target' "$IPT" -t mangle -j TCPMSS -h
+fi
+
+[ -e /dev/loop-control ] && ok 'opcional: loop device' || warn 'opcional: /dev/loop-control ausente'
+"$BB" grep -qw overlay /proc/filesystems 2>/dev/null && ok 'opcional: OverlayFS' || warn 'opcional: OverlayFS indisponível'
+[ -e /dev/fuse ] && ok 'opcional: FUSE' || warn 'opcional: /dev/fuse ausente'
+[ -e /dev/net/tun ] && ok 'opcional: TUN/TAP' || warn 'opcional: /dev/net/tun ausente'
+[ -e /dev/ptmx ] && ok 'PTY disponível' || warn '/dev/ptmx ausente'
+
+DS=""
+if command -v droidspaces >/dev/null 2>&1; then
+  DS=$(command -v droidspaces)
+else
+  for p in /data/local/Droidspaces/droidspaces /data/local/Droidspaces/bin/droidspaces /sbin/droidspaces; do
+    [ -x "$p" ] && { DS="$p"; break; }
+  done
+fi
+
+if [ -n "$DS" ]; then
+  printf '\n[INFO] Executando diagnóstico nativo: %s check\n' "$DS"
+  OUT=$("$DS" check 2>&1); RC=$?
+  printf '%s\n' "$OUT"
+  if [ "$RC" -ne 0 ] || printf '%s\n' "$OUT" | "$BB" grep -q 'required feature(s) missing'; then
+    bad 'droidspaces check detectou requisito obrigatório ausente'
+  else
+    ok 'droidspaces check'
+  fi
+else
+  warn 'binário DroidSpaces não instalado; diagnóstico nativo ignorado'
+fi
+
+printf '\nResumo: %s falha(s), %s aviso(s).\n' "$FAIL" "$WARN"
+[ "$FAIL" -eq 0 ]
