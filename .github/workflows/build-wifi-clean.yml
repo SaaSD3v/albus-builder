@@ -2,6 +2,9 @@ name: Build recovery (Clean Wi-Fi)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - recovery-wifi-clean
 
 permissions:
   contents: read
