@@ -27,6 +27,7 @@ WCNSS_LOG=$STATE/wcnss.log
 PREPLOG=$STATE/prepare.log
 IFACE=${WIFI_IFACE:-wlan0}
 
+SYSTEM_BLOCK=/dev/block/bootdevice/by-name/system
 VENDOR_BLOCK=/dev/block/bootdevice/by-name/oem
 MODEM_BLOCK=/dev/block/bootdevice/by-name/modem
 
@@ -67,21 +68,36 @@ require_root() {
     [ "$uid" = 0 ] || die "run from a root recovery shell"
 }
 
+mount_system() {
+    if [ -x /system/bin/linker64 ] || [ -x /system/bin/linker ]; then
+        return 0
+    fi
+
+    mkdir -p /system || return 1
+    if ! is_mounted /system; then
+        [ -e "$SYSTEM_BLOCK" ] || return 1
+        mount -t ext4 -o ro,nosuid,nodev "$SYSTEM_BLOCK" /system ||
+            return 1
+    fi
+
+    [ -x /system/bin/linker64 ] || [ -x /system/bin/linker ]
+}
+
 vendor_root() {
     if [ -x /vendor/bin/wcnss_service ]; then
         printf '%s\n' /vendor
         return 0
     fi
 
-    mkdir -p "$MNT/vendor" || return 1
-    if ! is_mounted "$MNT/vendor"; then
+    mkdir -p /vendor || return 1
+    if ! is_mounted /vendor; then
         [ -e "$VENDOR_BLOCK" ] || return 1
-        mount -t ext4 -o ro,nosuid,nodev "$VENDOR_BLOCK" "$MNT/vendor" ||
+        mount -t ext4 -o ro,nosuid,nodev "$VENDOR_BLOCK" /vendor ||
             return 1
     fi
 
-    [ -x "$MNT/vendor/bin/wcnss_service" ] || return 1
-    printf '%s\n' "$MNT/vendor"
+    [ -x /vendor/bin/wcnss_service ] || return 1
+    printf '%s\n' /vendor
 }
 
 mount_modem() {
@@ -180,6 +196,12 @@ prepare() {
         log "$IFACE already initialized; preserving running driver"
         return 0
     fi
+
+    mount_system || {
+        log "Albus system mount/linker unavailable"
+        return 1
+    }
+    log "system linker ready"
 
     VROOT=$(vendor_root) || {
         log "Albus vendor/OEM unavailable"
