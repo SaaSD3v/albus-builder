@@ -44,7 +44,7 @@ def build_overlay(args):
     dict_size, lc, lp, pb = parse_lzma_alone_header(base_data)
 
     entries = [
-        ("sbin/wifi", args.wifi.read_bytes(), stat.S_IFREG | 0o755),
+        ("sbin/rctools-net", args.net.read_bytes(), stat.S_IFREG | 0o755),
         ("sbin/albus-WCNSS_qcom_cfg.ini", args.config.read_bytes(), stat.S_IFREG | 0o644),
         ("sbin/wpa_supplicant.albus", args.wpa.read_bytes(), stat.S_IFREG | 0o755),
         ("sbin/wpa_cli.albus", args.wpacli.read_bytes(), stat.S_IFREG | 0o755),
@@ -89,7 +89,7 @@ def build_overlay(args):
 
     check = lzma.decompress(packed, format=lzma.FORMAT_ALONE)
     required = (
-        b"sbin/wifi\0",
+        b"sbin/rctools-net\0",
         b"sbin/albus-WCNSS_qcom_cfg.ini\0",
         b"sbin/wpa_supplicant.albus\0",
         b"sbin/wpa_cli.albus\0",
@@ -132,7 +132,7 @@ def verify_combined(base: Path, combined: Path):
 
     raw = lzma.decompress(tail, format=lzma.FORMAT_ALONE)
     required = (
-        b"sbin/wifi\0",
+        b"sbin/rctools-net\0",
         b"sbin/wpa_supplicant.albus\0",
         b"sbin/wpa_cli.albus\0",
         b"sbin/hostapd.albus\0",
@@ -164,7 +164,7 @@ def main():
 
     b = sub.add_parser("build")
     b.add_argument("--base", type=Path, required=True)
-    b.add_argument("--wifi", type=Path, required=True)
+    b.add_argument("--net", type=Path, required=True)
     b.add_argument("--config", type=Path, required=True)
     b.add_argument("--wpa", type=Path, required=True)
     b.add_argument("--wpacli", type=Path, required=True)

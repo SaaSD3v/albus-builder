@@ -1,4 +1,6 @@
-name: Build recovery (Albus Full Wi-Fi + Hotspot)
+name: Build Albus RCTools CLI Minimal
+
+run-name: Albus RCTools CLI Minimal • Wi-Fi + Hotspot + DroidSpaces
 
 on:
   workflow_dispatch:
@@ -11,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: albus-wifi-hotspot-full-${{ github.ref }}
+  group: albus-rctools-cli-minimal-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -147,41 +149,41 @@ jobs:
         run: |
           set -euo pipefail
           grep -qx 'CONFIG_UDHCPD=y' recovery-wifi/out/busybox.config
-          for symbol in SHA256SUM CP MV CHOWN SYNC TIMEOUT DATE NTPD NSLOOKUP; do
+          for symbol in SHA256SUM CP MV CHOWN SYNC TIMEOUT DATE NTPD NSLOOKUP MOUNT UMOUNT LS HEAD TEE; do
             grep -qx "CONFIG_${symbol}=y" recovery-wifi/out/busybox.config
           done
 
-          sh -n recovery-wifi/wifi
+          sh -n recovery-wifi/rctools-net
           sh -n recovery-wifi/wifi-udhcpc.script
           sh -n recovery-wifi/recovery-time-sync-albus
           sh -n recovery-wifi/rctools
           sh -n recovery-wifi/ds-recovery-check
-          grep -Fq 'timeout 12 "$WPA"' recovery-wifi/wifi
-          grep -Fq '[ -s "$STATE/lease.env" ]' recovery-wifi/wifi
-          grep -Fq 'WPA_CLI_TIMEOUT=${WIFI_WPA_CLI_TIMEOUT:-2}' recovery-wifi/wifi
-          grep -Fq 'CONTROL_TIMEOUT=${WIFI_CONTROL_TIMEOUT:-5}' recovery-wifi/wifi
-          grep -Fq 'DATA_MOUNT_TIMEOUT=${WIFI_DATA_MOUNT_TIMEOUT:-8}' recovery-wifi/wifi
-          grep -Fq 'MOUNT_TIMEOUT=${WIFI_MOUNT_TIMEOUT:-5}' recovery-wifi/wifi
-          grep -Fq 'SYNC_TIMEOUT=${WIFI_SYNC_TIMEOUT:-5}' recovery-wifi/wifi
-          grep -Fq 'stop_child_bounded "$dhcp_pid"' recovery-wifi/wifi
-          grep -Fq 'stage=persistence checking saved wlan profiles' recovery-wifi/wifi
-          grep -Fq 'stage=supplicant starting' recovery-wifi/wifi
-          grep -Fq 'stage=association waiting up to 25s' recovery-wifi/wifi
-          grep -Fq 'stage=dhcp acquiring lease' recovery-wifi/wifi
-          grep -Fq 'Static resolver fallback:' recovery-wifi/wifi
-          grep -Fq 'TIME_SYNC=/sbin/recovery-time-sync' recovery-wifi/wifi
-          grep -Fq 'RCTOOLS=/sbin/rctools' recovery-wifi/wifi
-          grep -Fq '"$RCTOOLS" mount data rw' recovery-wifi/wifi
-          grep -Fq 'if [ "$#" -eq 0 ]; then' recovery-wifi/wifi
-          if grep -Fq '"$WPACLI" -p' recovery-wifi/wifi; then
+          grep -Fq 'timeout 12 "$WPA"' recovery-wifi/rctools-net
+          grep -Fq '[ -s "$STATE/lease.env" ]' recovery-wifi/rctools-net
+          grep -Fq 'WPA_CLI_TIMEOUT=${WIFI_WPA_CLI_TIMEOUT:-2}' recovery-wifi/rctools-net
+          grep -Fq 'CONTROL_TIMEOUT=${WIFI_CONTROL_TIMEOUT:-5}' recovery-wifi/rctools-net
+          grep -Fq 'DATA_MOUNT_TIMEOUT=${WIFI_DATA_MOUNT_TIMEOUT:-8}' recovery-wifi/rctools-net
+          grep -Fq 'MOUNT_TIMEOUT=${WIFI_MOUNT_TIMEOUT:-5}' recovery-wifi/rctools-net
+          grep -Fq 'SYNC_TIMEOUT=${WIFI_SYNC_TIMEOUT:-5}' recovery-wifi/rctools-net
+          grep -Fq 'stop_child_bounded "$dhcp_pid"' recovery-wifi/rctools-net
+          grep -Fq 'stage=persistence checking saved wlan profiles' recovery-wifi/rctools-net
+          grep -Fq 'stage=supplicant starting' recovery-wifi/rctools-net
+          grep -Fq 'stage=association waiting up to 25s' recovery-wifi/rctools-net
+          grep -Fq 'stage=dhcp acquiring lease' recovery-wifi/rctools-net
+          grep -Fq 'Static resolver fallback:' recovery-wifi/rctools-net
+          grep -Fq 'TIME_SYNC=/sbin/recovery-time-sync' recovery-wifi/rctools-net
+          grep -Fq 'RCTOOLS=/sbin/rctools' recovery-wifi/rctools-net
+          grep -Fq '"$RCTOOLS" mount data rw' recovery-wifi/rctools-net
+          grep -Fq 'if [ "$#" -eq 0 ]; then' recovery-wifi/rctools-net
+          if grep -Fq '"$WPACLI" -p' recovery-wifi/rctools-net; then
             echo "Direct unbounded wpa_cli invocation remains"
             exit 1
           fi
-          if grep -Fq '"$IPTABLES" -' recovery-wifi/wifi; then
+          if grep -Fq '"$IPTABLES" -' recovery-wifi/rctools-net; then
             echo "Direct unbounded iptables invocation remains"
             exit 1
           fi
-          if grep -Fqi 'twrp mount' recovery-wifi/wifi; then
+          if grep -Fqi 'twrp mount' recovery-wifi/rctools-net; then
             echo "TWRP mount dependency remains in Wi-Fi runtime"
             exit 1
           fi
@@ -191,9 +193,20 @@ jobs:
           fi
           grep -Fq 'The stock TWRP GUI/recovery service is intentionally not defined here.' recovery-wifi/init.recovery.service.rc
           grep -Fq 'RCTools - Motorola Albus CLI recovery' recovery-wifi/rctools
-          grep -Fq 'rctools mount active system|vendor|oem|all [rw|ro]' recovery-wifi/rctools
+          grep -Fq 'single-slot (A-only/non-A/B)' recovery-wifi/rctools
+          grep -Fq "vendor|oem) printf '%s\n' oem" recovery-wifi/rctools
+          grep -Fq "firmware|modem) printf '%s\n' modem" recovery-wifi/rctools
+          grep -Fq 'rctools mount system [rw|ro]' recovery-wifi/rctools
+          grep -Fq 'rctools mount vendor [rw|ro]' recovery-wifi/rctools
+          grep -Fq 'rctools mount firmware [ro|rw]' recovery-wifi/rctools
           grep -Fq 'rctools mount data [rw|ro]' recovery-wifi/rctools
           grep -Fq 'rctools mount common [rw|ro]' recovery-wifi/rctools
+          ! grep -Fq 'rctools mount b ' recovery-wifi/rctools
+          grep -Fq 'Albus has no slot B' recovery-wifi/rctools
+          grep -Fq 'NET=/sbin/rctools-net' recovery-wifi/rctools
+          ! grep -Fq 'WIFI=/sbin/wifi' recovery-wifi/rctools
+          ! grep -Fq "cat <<'EOF'" recovery-wifi/rctools
+          test ! -e recovery-wifi/wifi
           grep -Fq 'rctools droidspaces check' recovery-wifi/rctools
           grep -Fq 'TIMESYNC=/sbin/recovery-time-sync' recovery-wifi/rctools
           grep -Fq 'DSCHECK=/sbin/ds-recovery-check' recovery-wifi/rctools
@@ -207,40 +220,45 @@ jobs:
           grep -q 'wifi_control_watchdogs=wpa-cli-2s-iptables-5s-data-8s-mount-5s-sync-5s' artifacts/build-info.txt
           grep -q 'wifi_dns_fallback=busybox-nslookup-ipv4' artifacts/build-info.txt
           grep -q 'wifi_time_sync=one-shot-ntp-last-good-under-data-local-wifi' artifacts/build-info.txt
-          grep -q 'recovery_frontend=rctools-channel-compatible' artifacts/build-info.txt
-          grep -q 'recovery_mounts=rctools-direct-auto-ext4-f2fs-vfat-rw-default' artifacts/build-info.txt
+          grep -q 'recovery_frontend=rctools-albus-single-slot' artifacts/build-info.txt
+          grep -q 'recovery_ab_layout=single-slot-unsuffixed-no-slot-b' artifacts/build-info.txt
+          grep -q 'recovery_vendor_mapping=logical-vendor-to-oem-block' artifacts/build-info.txt
+          grep -q 'recovery_firmware_mapping=logical-firmware-to-modem-block' artifacts/build-info.txt
+          grep -q 'recovery_mounts=system-vendor-firmware-persist-fsg-dsp-cache-data-direct' artifacts/build-info.txt
           grep -q 'twrp_recovery_service=disabled-in-cli-minimal-overlay' artifacts/build-info.txt
 
-          grep -Fq 'WIFI_WLAN_NETWORKS=$WIFI_WLAN_DIR/networks' recovery-wifi/wifi
-          grep -Fq 'WIFI_AP_CONF=$WIFI_AP_DIR/hotspot.conf' recovery-wifi/wifi
-          grep -Fq 'commit_validated_network()' recovery-wifi/wifi
-          grep -Fq 'build_runtime_from_persistent()' recovery-wifi/wifi
-          grep -Fq 'cmd_networks()' recovery-wifi/wifi
-          grep -Fq 'cmd_forget()' recovery-wifi/wifi
-          grep -Fq 'cmd_hotspot_create()' recovery-wifi/wifi
-          grep -Fq 'cmd_hotspot_config()' recovery-wifi/wifi
-          grep -Fq 'cmd_hotspot_start()' recovery-wifi/wifi
-          grep -Fq 'start) cmd_hotspot_start "$@" ;;' recovery-wifi/wifi
-          grep -Fq 'active) echo "mode: AP-only on wlan0"' recovery-wifi/wifi
-          grep -qx 'IPTABLES=/sbin/iptables' recovery-wifi/wifi
-          if grep -qx 'IPTABLES=/sbin/iptables.albus' recovery-wifi/wifi; then
+          grep -Fq 'WIFI_WLAN_NETWORKS=$WIFI_WLAN_DIR/networks' recovery-wifi/rctools-net
+          grep -Fq 'WIFI_AP_CONF=$WIFI_AP_DIR/hotspot.conf' recovery-wifi/rctools-net
+          grep -Fq 'commit_validated_network()' recovery-wifi/rctools-net
+          grep -Fq 'build_runtime_from_persistent()' recovery-wifi/rctools-net
+          grep -Fq 'cmd_networks()' recovery-wifi/rctools-net
+          grep -Fq 'cmd_forget()' recovery-wifi/rctools-net
+          grep -Fq 'cmd_hotspot_create()' recovery-wifi/rctools-net
+          grep -Fq 'cmd_hotspot_config()' recovery-wifi/rctools-net
+          grep -Fq 'cmd_hotspot_start()' recovery-wifi/rctools-net
+          grep -Fq 'start) cmd_hotspot_start "$@" ;;' recovery-wifi/rctools-net
+          grep -Fq 'active) echo "mode: AP-only on wlan0"' recovery-wifi/rctools-net
+          grep -qx 'IPTABLES=/sbin/iptables' recovery-wifi/rctools-net
+          if grep -qx 'IPTABLES=/sbin/iptables.albus' recovery-wifi/rctools-net; then
             echo "Runtime must invoke xtables-multi through the /sbin/iptables alias"
             exit 1
           fi
-          grep -Fq 'cmd_hotspot_repeater()' recovery-wifi/wifi
-          grep -Fq 'cmd_hotspot_repeater_2g()' recovery-wifi/wifi
-          grep -Fq 'cmd_hotspot_repeater_5g()' recovery-wifi/wifi
-          grep -Fq 'repeater-2g:*) echo "mode: repeater 2.4 GHz (AP+STA+NAT)"' recovery-wifi/wifi
-          grep -Fq 'repeater-5g:*) echo "mode: repeater 5 GHz (AP+STA+NAT)"' recovery-wifi/wifi
-          grep -Fq 'STA_CHANNEL=$(( (STA_FREQ - 5000) / 5 ))' recovery-wifi/wifi
-          grep -Fq "HOTSPOT_HW_MODE=a" recovery-wifi/wifi
-          grep -Fq "HOTSPOT_HW_MODE=g" recovery-wifi/wifi
-          grep -Fq 'Internet sharing/NAT is disabled in start-vif mode.' recovery-wifi/wifi
-          grep -Fq 'ALBUS_HOTSPOT_FWD' recovery-wifi/wifi
-          grep -Fq 'ALBUS_HOTSPOT_NAT' recovery-wifi/wifi
-          grep -Fq 'MASQUERADE' recovery-wifi/wifi
-          grep -Fq '/proc/sys/net/ipv4/ip_forward' recovery-wifi/wifi
+          grep -Fq 'cmd_hotspot_repeater()' recovery-wifi/rctools-net
+          grep -Fq 'cmd_hotspot_repeater_2g()' recovery-wifi/rctools-net
+          grep -Fq 'cmd_hotspot_repeater_5g()' recovery-wifi/rctools-net
+          grep -Fq 'repeater-2g:*) echo "mode: repeater 2.4 GHz (AP+STA+NAT)"' recovery-wifi/rctools-net
+          grep -Fq 'repeater-5g:*) echo "mode: repeater 5 GHz (AP+STA+NAT)"' recovery-wifi/rctools-net
+          grep -Fq 'STA_CHANNEL=$(( (STA_FREQ - 5000) / 5 ))' recovery-wifi/rctools-net
+          grep -Fq "HOTSPOT_HW_MODE=a" recovery-wifi/rctools-net
+          grep -Fq "HOTSPOT_HW_MODE=g" recovery-wifi/rctools-net
+          grep -Fq 'Internet sharing/NAT is disabled in start-vif mode.' recovery-wifi/rctools-net
+          grep -Fq 'ALBUS_HOTSPOT_FWD' recovery-wifi/rctools-net
+          grep -Fq 'ALBUS_HOTSPOT_NAT' recovery-wifi/rctools-net
+          grep -Fq 'MASQUERADE' recovery-wifi/rctools-net
+          grep -Fq '/proc/sys/net/ipv4/ip_forward' recovery-wifi/rctools-net
           test -s artifacts/rctools
+          test -s artifacts/rctools-net
+          test ! -e artifacts/wifi
           test -s artifacts/ds-recovery-check
           test -s artifacts/init.recovery.service.rc
           test -s artifacts/recovery-time-sync-albus
@@ -260,8 +278,8 @@ jobs:
           grep -Eq 'iw version 5\.9' iw-version.txt
 
           "$QEMU" recovery-wifi/out/busybox.albus --list > busybox-applets.txt
-          for applet in awk cat chmod chown cp date grep ifconfig ip mkdir mount mv nslookup ntpd ping \
-                        readlink rm sed sha256sum sleep sync tail tee timeout udhcpc udhcpd; do
+          for applet in awk cat chmod chown cp date grep head ifconfig ip ls mkdir mount mv nslookup ntpd ping \
+                        readlink rm sed sha256sum sleep sync tail tee timeout udhcpc udhcpd umount; do
             grep -qx "$applet" busybox-applets.txt || {
               echo "BusyBox Albus binary is missing required applet: $applet"
               exit 1
@@ -282,6 +300,6 @@ jobs:
       - name: Upload recovery
         uses: actions/upload-artifact@v4
         with:
-          name: recovery-albus-full-hotspot
+          name: recovery-albus-rctools-cli-minimal
           path: artifacts/*
           if-no-files-found: error

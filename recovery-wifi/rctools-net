@@ -1,5 +1,6 @@
 #!/sbin/sh
-# Recovery Wi-Fi controller for Motorola albus (Moto Z2 Play / MSM8953).
+# RCTools internal networking backend for Motorola albus (Moto Z2 Play / MSM8953).
+# Invoke through /sbin/rctools; this is not a second user-facing CLI.
 # Fully self-contained recovery userspace, following the Channel architecture:
 # stock partitions are data-only sources; no Android /system or vendor service
 # is required to trigger WCNSS/PRONTO.
@@ -8,7 +9,10 @@ set -u
 umask 077
 
 PATH=/sbin:/system/bin:/system/xbin:/vendor/bin:/vendor/bin/hw
-export PATH
+TMPDIR=/tmp
+TMP=/tmp
+TEMP=/tmp
+export PATH TMPDIR TMP TEMP
 LC_ALL=C
 export LC_ALL
 
@@ -79,7 +83,7 @@ FIRMWARE_PATH_NODE=/sys/module/firmware_class/parameters/path
 FWPATH_NODE=/sys/module/wlan/parameters/fwpath
 
 die() {
-    echo "wifi: $*" >&2
+    echo "rctools-net: $*" >&2
     exit 1
 }
 
@@ -90,7 +94,7 @@ mkdir_state() {
 
 log() {
     mkdir_state
-    echo "[wifi] $*" | tee -a "$PREPLOG"
+    echo "[rctools:wifi] $*" | "$BB" tee -a "$PREPLOG"
 }
 
 wpacli() {
@@ -931,7 +935,7 @@ resolve_hotspot_request() {
     case "$#" in
         0)
             load_saved_hotspot_request || {
-                echo "No saved ap0 hotspot. Create one with: wifi hotspot create \"SSID\" \"PASSWORD\" [CHANNEL]"
+                echo "No saved ap0 hotspot. Create one with: rctools hotspot create \"SSID\" \"PASSWORD\" [CHANNEL]"
                 return 1
             }
             ;;
@@ -951,7 +955,7 @@ cmd_hotspot_create() {
     case "$#" in
         2|3) ;;
         *)
-            echo 'usage: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+            echo 'usage: rctools hotspot create "SSID" "PASSWORD" [CHANNEL]'
             return 2
             ;;
     esac
@@ -963,8 +967,8 @@ cmd_hotspot_create() {
 
     [ ! -f "$WIFI_AP_CONF" ] || {
         echo "A saved ap0 hotspot already exists."
-        echo 'Use: wifi hotspot config [ssid "NEW"] [password "NEW"] [channel N]'
-        echo 'Or:  wifi hotspot delete'
+        echo 'Use: rctools hotspot config [ssid "NEW"] [password "NEW"] [channel N]'
+        echo 'Or:  rctools hotspot delete'
         return 1
     }
 
@@ -984,7 +988,7 @@ cmd_hotspot_create() {
 
     echo "Saved ap0 hotspot: $1"
     echo "Channel: $channel"
-    echo "Use 'wifi hotspot start-vif' or 'wifi hotspot repeater' with no arguments."
+    echo "Use 'rctools hotspot start-vif' or 'rctools hotspot repeater' with no arguments."
 }
 
 cmd_hotspot_config() {
@@ -993,7 +997,7 @@ cmd_hotspot_config() {
         return 1
     }
     [ -f "$WIFI_AP_CONF" ] || {
-        echo 'No saved ap0 hotspot. Create one with: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+        echo 'No saved ap0 hotspot. Create one with: rctools hotspot create "SSID" "PASSWORD" [CHANNEL]'
         return 1
     }
 
@@ -1061,7 +1065,7 @@ cmd_hotspot_config() {
 
 cmd_hotspot_delete() {
     [ "$#" -eq 0 ] || {
-        echo "usage: wifi hotspot delete"
+        echo "usage: rctools hotspot delete"
         return 2
     }
 
@@ -1287,25 +1291,25 @@ restore_client_after_hotspot_failure() {
     deconfigure_network
     echo "Hotspot startup failed; attempting to restore client Wi-Fi."
     cmd_up || {
-        echo "Client Wi-Fi could not be restored automatically. Run: wifi logs"
+        echo "Client Wi-Fi could not be restored automatically. Run: rctools wifi logs"
         return 1
     }
 }
 
 cmd_hotspot_start() {
     [ "$#" -eq 0 ] || {
-        echo "usage: wifi hotspot start"
-        echo 'Create a saved hotspot first with: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+        echo "usage: rctools hotspot start"
+        echo 'Create a saved hotspot first with: rctools hotspot create "SSID" "PASSWORD" [CHANNEL]'
         return 2
     }
 
     load_saved_hotspot_request || {
-        echo 'No saved hotspot. Create one with: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+        echo 'No saved hotspot. Create one with: rctools hotspot create "SSID" "PASSWORD" [CHANNEL]'
         return 2
     }
 
     prepare || {
-        echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
+        echo "Wi-Fi driver did not create $IFACE. Run: rctools wifi logs"
         return 1
     }
 
@@ -1419,7 +1423,7 @@ cmd_hotspot_probe_vif() {
         return 2
     }
     [ ! -f "$HOTSPOT_MARKER" ] || {
-        echo "Hotspot is active. Stop it first: wifi hotspot stop"
+        echo "Hotspot is active. Stop it first: rctools hotspot stop"
         return 1
     }
 
@@ -1451,7 +1455,7 @@ cmd_hotspot_probe_vif() {
     fi
 
     if ! delete_hotspot_vif; then
-        echo "AP VIF was created but cleanup failed. Run: wifi logs"
+        echo "AP VIF was created but cleanup failed. Run: rctools wifi logs"
         return 1
     fi
 
@@ -1462,13 +1466,13 @@ cmd_hotspot_probe_vif() {
 
 cmd_hotspot_start_vif() {
     resolve_hotspot_request "$@" || {
-        [ "$#" -eq 1 ] && echo 'usage: wifi hotspot start-vif ["SSID" "PASSWORD" [CHANNEL]]'
+        [ "$#" -eq 1 ] && echo 'usage: rctools hotspot start-vif ["SSID" "PASSWORD" [CHANNEL]]'
         return 2
     }
 
     require_hotspot_payload
     [ ! -f "$HOTSPOT_MARKER" ] || {
-        echo "A hotspot is already active. Stop it first: wifi hotspot stop"
+        echo "A hotspot is already active. Stop it first: rctools hotspot stop"
         return 1
     }
 
@@ -1564,7 +1568,7 @@ repeater_active_guard() {
             fi
             ;;
         *)
-            echo "A hotspot is already active. Stop it first: wifi hotspot stop"
+            echo "A hotspot is already active. Stop it first: rctools hotspot stop"
             ;;
     esac
     return 1
@@ -1575,7 +1579,7 @@ cmd_hotspot_repeater_band() {
     shift
 
     resolve_hotspot_request "$@" || {
-        echo 'usage: wifi hotspot repeater-2g|repeater-5g ["SSID" "PASSWORD" [CHANNEL]]'
+        echo 'usage: rctools hotspot repeater-2g|repeater-5g ["SSID" "PASSWORD" [CHANNEL]]'
         return 2
     }
 
@@ -1591,7 +1595,7 @@ cmd_hotspot_repeater_band() {
 
     if [ "$sta_state" != COMPLETED ]; then
         echo "Repeater mode requires $IFACE to be connected to upstream Wi-Fi first."
-        echo 'Connect first with: wifi connect "SSID" "PASSWORD"'
+        echo 'Connect first with: rctools wifi connect "SSID" "PASSWORD"'
         return 1
     fi
 
@@ -1605,12 +1609,12 @@ cmd_hotspot_repeater_band() {
             2g)
                 echo "$IFACE is currently connected to 2.4 GHz (${STA_FREQ} MHz, channel $STA_CHANNEL)."
                 echo "PRONTO STA+AP is single-channel, so repeater-5g cannot run on this upstream."
-                echo "Connect $IFACE to a 5 GHz upstream first, or use: wifi hotspot repeater-2g"
+                echo "Connect $IFACE to a 5 GHz upstream first, or use: rctools hotspot repeater-2g"
                 ;;
             5g)
                 echo "$IFACE is currently connected to 5 GHz (${STA_FREQ} MHz, channel $STA_CHANNEL)."
                 echo "PRONTO STA+AP is single-channel, so repeater-2g cannot run on this upstream."
-                echo "Connect $IFACE to a 2.4 GHz upstream first, or use: wifi hotspot repeater-5g"
+                echo "Connect $IFACE to a 2.4 GHz upstream first, or use: rctools hotspot repeater-5g"
                 ;;
         esac
         return 1
@@ -1835,7 +1839,7 @@ EOF
 
 cmd_up() {
     prepare || {
-        echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
+        echo "Wi-Fi driver did not create $IFACE. Run: rctools wifi logs"
         return 1
     }
 
@@ -1849,7 +1853,7 @@ cmd_up() {
 
     echo "[wifi] stage=supplicant starting"
     start_supplicant "$CONF" || {
-        echo "[wifi] supplicant failed. Run: wifi logs"
+        echo "[wifi] supplicant failed. Run: rctools wifi logs"
         return 1
     }
     echo "[wifi] stage=supplicant ready on $IFACE"
@@ -1861,20 +1865,20 @@ cmd_up() {
             if do_dhcp; then
                 echo "Wi-Fi connection and DHCP restored on $IFACE"
             else
-                echo "Wi-Fi reassociated, but DHCP failed. Run: wifi dhcp; wifi logs"
+                echo "Wi-Fi reassociated, but DHCP failed. Run: rctools wifi dhcp; rctools wifi logs"
                 return 1
             fi
         else
             echo "Wi-Fi ready; no saved network associated within the timeout"
         fi
     else
-        echo "[wifi] no network blocks in runtime config; use wifi connect/scan"
+        echo "[wifi] no network blocks in runtime config; use rctools wifi connect/scan"
     fi
 }
 
 cmd_scan() {
     [ ! -f "$HOTSPOT_MARKER" ] || {
-        echo "Hotspot is active. Stop it before scanning: wifi hotspot stop"
+        echo "Hotspot is active. Stop it before scanning: rctools hotspot stop"
         return 1
     }
     [ -S "$CTRL/$IFACE" ] || cmd_up || return 1
@@ -1885,7 +1889,7 @@ cmd_scan() {
 
 cmd_connect() {
     [ "$#" -ge 2 ] || {
-        echo 'usage: wifi connect "SSID" "PASSWORD"'
+        echo 'usage: rctools wifi connect "SSID" "PASSWORD"'
         return 2
     }
 
@@ -1912,7 +1916,7 @@ cmd_connect() {
 
 cmd_connect_open() {
     [ "$#" -ge 1 ] || {
-        echo 'usage: wifi connect-open "SSID"'
+        echo 'usage: rctools wifi connect-open "SSID"'
         return 2
     }
 
@@ -1939,7 +1943,7 @@ cmd_connect_open() {
 
 cmd_connect_sae() {
     [ "$#" -ge 2 ] || {
-        echo 'usage: wifi connect-sae "SSID" "PASSWORD"'
+        echo 'usage: rctools wifi connect-sae "SSID" "PASSWORD"'
         return 2
     }
 
@@ -1994,7 +1998,7 @@ cmd_networks() {
 
 cmd_forget() {
     [ "$#" -ge 1 ] || {
-        echo 'usage: wifi forget "SSID"'
+        echo 'usage: rctools wifi forget "SSID"'
         return 2
     }
     ssid=$1
@@ -2068,7 +2072,7 @@ deconfigure_network() {
 }
 
 cmd_ping() {
-    [ "$#" -ge 1 ] || { echo 'usage: wifi ping HOST'; return 2; }
+    [ "$#" -ge 1 ] || { echo 'usage: rctools wifi ping HOST'; return 2; }
     host=$1
     "$BB" ping -c 4 "$host" && return 0
     dns=$("$BB" awk '
@@ -2162,44 +2166,43 @@ cmd_test() {
 }
 
 usage() {
-    cat <<'EOF'
-Recovery Wi-Fi (Motorola albus)
-
-  wifi prepare
-  wifi up
-  wifi start                         # alias for up
-  wifi scan
-  wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK
-  wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE
-  wifi connect-open "SSID"
-  wifi networks
-  wifi forget "SSID"
-  wifi forget-all
-  wifi hotspot create "SSID" "PASSWORD" [CHANNEL]    # persist under /data/local/wifi/ap0
-  wifi hotspot config                                  # show saved ap0 config
-  wifi hotspot config ssid|password|channel VALUE
-  wifi hotspot delete
-  wifi hotspot start                                    # AP-only on wlan0 using saved profile
-  wifi hotspot probe-vif
-  wifi hotspot start-vif ["SSID" "PASSWORD" [CHANNEL]] # AP+STA, no NAT; no args = saved ap0
-  wifi hotspot repeater ["SSID" "PASSWORD" [CHANNEL]]   # auto: follows wlan0 band/channel
-  wifi hotspot repeater-2g ["SSID" "PASSWORD" [CHANNEL]] # require wlan0 on 2.4 GHz
-  wifi hotspot repeater-5g ["SSID" "PASSWORD" [CHANNEL]] # require wlan0 on 5 GHz
-  wifi hotspot status
-  wifi hotspot clients
-  wifi hotspot stop
-  wifi dhcp
-  wifi status
-  wifi ping HOST
-  wifi disconnect
-  wifi down
-  wifi stop                          # alias for down
-  wifi logs
-  wifi test
-  wifi help
-EOF
+    printf '%s\n' \
+        'RCTools networking backend (Motorola albus)' \
+        '' \
+        '  rctools wifi prepare' \
+        '  rctools wifi up' \
+        '  rctools wifi start' \
+        '  rctools wifi scan' \
+        '  rctools wifi connect "SSID" "PASSWORD"' \
+        '  rctools wifi connect-sae "SSID" "PASSWORD"' \
+        '  rctools wifi connect-open "SSID"' \
+        '  rctools wifi networks' \
+        '  rctools wifi forget "SSID"' \
+        '  rctools wifi forget-all' \
+        '  rctools hotspot create "SSID" "PASSWORD" [CHANNEL]' \
+        '  rctools hotspot config' \
+        '  rctools hotspot config ssid|password|channel VALUE' \
+        '  rctools hotspot delete' \
+        '  rctools hotspot start' \
+        '  rctools hotspot probe-vif' \
+        '  rctools hotspot start-vif ["SSID" "PASSWORD" [CHANNEL]]' \
+        '  rctools hotspot repeater ["SSID" "PASSWORD" [CHANNEL]]' \
+        '  rctools hotspot repeater-2g ["SSID" "PASSWORD" [CHANNEL]]' \
+        '  rctools hotspot repeater-5g ["SSID" "PASSWORD" [CHANNEL]]' \
+        '  rctools hotspot status' \
+        '  rctools hotspot clients' \
+        '  rctools hotspot stop' \
+        '  rctools wifi dhcp' \
+        '  rctools wifi status' \
+        '  rctools wifi ping HOST' \
+        '  rctools wifi disconnect' \
+        '  rctools wifi down' \
+        '  rctools wifi stop' \
+        '  rctools wifi logs' \
+        '  rctools wifi test'
 }
 
+[ -d /tmp ] || "$BB" mkdir -p /tmp 2>/dev/null || true
 mkdir_state
 if [ "$#" -eq 0 ]; then
     usage

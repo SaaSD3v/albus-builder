@@ -35,7 +35,7 @@ mkdir -p "$WIFI_REPACK_DIR"
 
   python3 "$ROOT_DIR/recovery-wifi/build-overlay.py" build \
     --base "$WIFI_BASE_RAMDISK" \
-    --wifi "$ROOT_DIR/recovery-wifi/wifi" \
+    --net "$ROOT_DIR/recovery-wifi/rctools-net" \
     --config "$ROOT_DIR/recovery-wifi/WCNSS_qcom_cfg.ini" \
     --wpa "$WIFI_OUT/wpa_supplicant.albus" \
     --wpacli "$WIFI_OUT/wpa_cli.albus" \
@@ -84,16 +84,16 @@ mkdir -p "$WIFI_VERIFY_DIR"
 )
 
 for cmd in prepare up start scan connect connect-sae connect-open networks forget forget-all hotspot dhcp status ping disconnect down stop logs test; do
-  grep -Fq "$cmd" "$ROOT_DIR/recovery-wifi/wifi" ||
+  grep -Fq "$cmd" "$ROOT_DIR/recovery-wifi/rctools-net" ||
     die "missing Wi-Fi command in controller: $cmd"
 done
 
 for hotspot_cmd in create config delete start probe-vif start-vif repeater repeater-2g repeater-5g status clients stop; do
-  grep -Fq "$hotspot_cmd" "$ROOT_DIR/recovery-wifi/wifi" ||
+  grep -Fq "$hotspot_cmd" "$ROOT_DIR/recovery-wifi/rctools-net" ||
     die "missing hotspot subcommand in controller: $hotspot_cmd"
 done
 
-if grep -Eq '^[[:space:]]*export[[:space:]]+LD_LIBRARY_PATH' "$ROOT_DIR/recovery-wifi/wifi"; then
+if grep -Eq '^[[:space:]]*export[[:space:]]+LD_LIBRARY_PATH' "$ROOT_DIR/recovery-wifi/rctools-net"; then
   die "Wi-Fi script exports LD_LIBRARY_PATH globally"
 fi
 
@@ -109,7 +109,7 @@ readonly WIFI_FINAL_SHA256
 
 sed -i \
   -e "s|^recovery_sha256=.*|recovery_sha256=${WIFI_FINAL_SHA256}|" \
-  -e 's|^build_type=.*|build_type=bare-plus-complete-recovery-wifi-client|' \
+  -e 's|^build_type=.*|build_type=albus-rctools-cli-minimal|' \
   "$ARTIFACT_DIR/build-info.txt"
 
 {
@@ -131,13 +131,16 @@ sed -i \
   printf 'wifi_control_watchdogs=wpa-cli-2s-iptables-5s-data-8s-mount-5s-sync-5s\n'
   printf 'wifi_dns_fallback=busybox-nslookup-ipv4\n'
   printf 'wifi_time_sync=one-shot-ntp-last-good-under-data-local-wifi\n'
-  printf 'recovery_frontend=rctools-channel-compatible\n'
-  printf 'recovery_mounts=rctools-direct-auto-ext4-f2fs-vfat-rw-default\n'
+  printf 'recovery_frontend=rctools-albus-single-slot\n'
+  printf 'recovery_ab_layout=single-slot-unsuffixed-no-slot-b\n'
+  printf 'recovery_vendor_mapping=logical-vendor-to-oem-block\n'
+  printf 'recovery_firmware_mapping=logical-firmware-to-modem-block\n'
+  printf 'recovery_mounts=system-vendor-firmware-persist-fsg-dsp-cache-data-direct\n'
   printf 'twrp_recovery_service=disabled-in-cli-minimal-overlay\n'
   printf 'wifi_overlay_size=%s\n' "$(stat -c '%s' "$WIFI_OVERLAY_RAMDISK")"
 } >> "$ARTIFACT_DIR/build-info.txt"
 
-cp "$ROOT_DIR/recovery-wifi/wifi" "$ARTIFACT_DIR/wifi"
+cp "$ROOT_DIR/recovery-wifi/rctools-net" "$ARTIFACT_DIR/rctools-net"
 cp "$ROOT_DIR/recovery-wifi/WCNSS_qcom_cfg.ini" "$ARTIFACT_DIR/WCNSS_qcom_cfg.ini"
 cp "$WIFI_OUT/wpa_supplicant.albus" "$ARTIFACT_DIR/"
 cp "$WIFI_OUT/wpa_cli.albus" "$ARTIFACT_DIR/"
@@ -160,7 +163,7 @@ cp "$ROOT_DIR/recovery-wifi/init.recovery.service.rc" "$ARTIFACT_DIR/"
     dt.img \
     kernel.config \
     build-info.txt \
-    wifi \
+    rctools-net \
     WCNSS_qcom_cfg.ini \
     wpa_supplicant.albus \
     wpa_cli.albus \
